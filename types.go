@@ -97,8 +97,9 @@ const (
 // Capabilities say what a Throne can do.
 type Capabilities struct {
 	// Tun says whether Throne has the privileges Tun needs, as far as it knows without
-	// asking, or is set not to ask for them.
-	Tun bool `json:"tun"`
+	// asking, or is set not to ask for them. It is nil while Throne does not know yet: on
+	// Linux and macOS, before the core connects or while its privilege check runs.
+	Tun *bool `json:"tun"`
 	// KillSwitch says whether the kill switch works on this system.
 	KillSwitch bool `json:"kill_switch"`
 	// Headless says whether Throne runs without a window.

@@ -29,7 +29,7 @@ It builds only with the `live` tag, so `go test ./...` never touches a real Thro
 | 09 | `cancel` | Latency test of `PROFILE`'s group, cancelled; ends `cancelled` or `done` |
 | 10 | `modes` | An unchanged `PUT /v1/modes`; with the opt-ins, each mode toggled and back while running |
 | 11 | `core-kill` | Kill ThroneCore; the core comes back and a reconnect works |
-| 12 | `capabilities` | `capabilities`, `restart_needed` and `degraded` in the status: `null` once settled, unless the kill switch failed |
+| 12 | `capabilities` | `capabilities`, `restart_needed` and `degraded` in the status: `capabilities.tun` is a bool or `null`, the other capabilities bools; `degraded` is `null` once settled, unless the kill switch failed |
 | 13 | `settings` | `GET /v1/settings`; `test_url` changed, set to the same value (nothing changed), refused changes (one bad value among good ones, a bad URL, an unknown setting) that change nothing, and put back |
 | 14 | `scratch-group` | Add a plain group, import two `socks5://` links into it, an import of nothing (`nothing_imported`), delete one profile, delete the group, delete it again (`not_found`) |
 | 15 | `geo` | The geo files; an unknown file (`bad_request`); with every file present, an update of the missing ones, which skips them all |

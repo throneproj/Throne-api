@@ -60,10 +60,16 @@ func writeStatus(w io.Writer, st *throne.Status) {
 		degraded = st.Degraded
 	}
 	var caps []string
+	switch tun := st.Capabilities.Tun; {
+	case tun == nil:
+		caps = append(caps, "tun (unknown)")
+	case *tun:
+		caps = append(caps, "tun")
+	}
 	for _, c := range []struct {
 		name string
 		on   bool
-	}{{"tun", st.Capabilities.Tun}, {"kill switch", st.Capabilities.KillSwitch}, {"headless", st.Capabilities.Headless}} {
+	}{{"kill switch", st.Capabilities.KillSwitch}, {"headless", st.Capabilities.Headless}} {
 		if c.on {
 			caps = append(caps, c.name)
 		}

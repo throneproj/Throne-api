@@ -269,6 +269,21 @@ func TestStatus(t *testing.T) {
 	}
 }
 
+func TestStatusTunCapability(t *testing.T) {
+	f, env := startFake(t)
+	for _, tc := range []struct{ tun, want string }{
+		{"true", "Capabilities:    tun, headless\n"},
+		{"false", "Capabilities:    headless\n"},
+		{"null", "Capabilities:    tun (unknown), headless\n"},
+	} {
+		f.on("GET /v1/status", ok(`{"state":"idle","profile":null,"last_profile_id":-1,`+
+			`"capabilities":{"tun":`+tc.tun+`,"kill_switch":false,"headless":true},"restart_needed":false}`))
+		if code, stdout, stderr := runCLI(t, env, "status"); code != 0 || !strings.Contains(stdout, tc.want) {
+			t.Errorf("tun %s: exit %d, stderr %q, output lacks %q:\n%s", tc.tun, code, stderr, tc.want, stdout)
+		}
+	}
+}
+
 func TestConnect(t *testing.T) {
 	f, env := startFake(t)
 	tests := []struct {

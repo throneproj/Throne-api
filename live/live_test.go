@@ -915,7 +915,12 @@ func (s *suite) testCapabilities(t *testing.T, r *recorder) {
 	if !ok {
 		t.Fatalf("capabilities %v, want an object", st["capabilities"])
 	}
-	for _, k := range []string{"tun", "kill_switch", "headless"} {
+	if tun, present := caps["tun"]; !present || tun != nil {
+		if _, ok := tun.(bool); !ok {
+			t.Errorf("capabilities.tun %v (present %v), want a bool or null", tun, present)
+		}
+	}
+	for _, k := range []string{"kill_switch", "headless"} {
 		if _, ok := caps[k].(bool); !ok {
 			t.Errorf("capabilities.%s %v, want a bool", k, caps[k])
 		}

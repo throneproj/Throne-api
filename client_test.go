@@ -221,6 +221,7 @@ func TestStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	on := true
 	want := &throne.Status{
 		State: throne.StateRunning,
 		Profile: &throne.Profile{ID: 0, Group: 0, Name: "DE Frankfurt", Type: "vless",
@@ -233,7 +234,7 @@ func TestStatus(t *testing.T) {
 		Core:          true,
 		Inbound:       throne.Inbound{Enabled: true, Address: "127.0.0.1", Port: 2080},
 		Version:       "1.4.0",
-		Capabilities:  throne.Capabilities{Tun: true, Headless: true},
+		Capabilities:  throne.Capabilities{Tun: &on, Headless: true},
 		RestartNeeded: true,
 	}
 	if !reflect.DeepEqual(st, want) {
@@ -242,6 +243,26 @@ func TestStatus(t *testing.T) {
 	r := rec.last(t)
 	if r.Method != "GET" || r.Path != "/v1/status" || r.Query != nil || r.Body != nil {
 		t.Fatalf("request = %+v", r)
+	}
+}
+
+func TestStatusTunCapability(t *testing.T) {
+	for _, tun := range []string{"true", "false", "null"} {
+		body := strings.Replace(statusJSON, `"capabilities":{"tun":true`, `"capabilities":{"tun":`+tun, 1)
+		c, _ := serve(t, func(context.Context, *testserver.Request) *testserver.Response {
+			return testserver.OK(json.RawMessage(body))
+		})
+		st, err := c.Status(t.Context())
+		if err != nil {
+			t.Fatalf("tun %s: %v", tun, err)
+		}
+		got := "null"
+		if st.Capabilities.Tun != nil {
+			got = fmt.Sprint(*st.Capabilities.Tun)
+		}
+		if got != tun || !st.Capabilities.Headless || st.Capabilities.KillSwitch {
+			t.Errorf("tun %s: Capabilities.Tun = %s, Capabilities = %+v", tun, got, st.Capabilities)
+		}
 	}
 }
 

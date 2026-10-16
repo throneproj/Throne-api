@@ -168,7 +168,7 @@ admin request gets 403 `forbidden`. The key is the same for both kinds.
 
 | Capability | |
 |---|---|
-| `tun` | Throne has the privileges Tun needs, as far as it knows without asking, or is set not to ask for them |
+| `tun` | Throne has the privileges Tun needs, as far as it knows without asking, or is set not to ask for them. `null` while Throne does not know yet: on Linux and macOS, before the core connects or while its privilege check runs |
 | `kill_switch` | The kill switch works on this system |
 | `headless` | Throne runs without a window |
 
