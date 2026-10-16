@@ -20,6 +20,8 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go vet ./...
+      # Compiles the live suite (live/README.md) without running it.
+      - run: go vet -tags live ./...
       # Windows checkouts may use CRLF line endings, which gofmt reports.
       - name: gofmt
         if: runner.os == 'Linux'
