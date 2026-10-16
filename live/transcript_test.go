@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -21,7 +22,8 @@ import (
 const masked = "<masked>"
 
 // runKeys name the fields whose values depend on the run: timestamps, measurements,
-// counters, subscription churn and the Throne build.
+// counters, subscription churn, the Throne build, and the sizes and hashes of archives
+// and geo files.
 var runKeys = map[string]bool{
 	"latency_ms":    true,
 	"latency_at":    true,
@@ -40,13 +42,29 @@ var runKeys = map[string]bool{
 	"from":          true,
 	"to":            true,
 	"version":       true,
+	"size":          true,
+	"sha256":        true,
+	"received":      true,
+	"created_at":    true,
 }
 
-var jobPath = regexp.MustCompile(`^/v1/tests/\d+$`)
+// idPaths are the paths with an ID that differs from run to run: of a test, or of a group,
+// backup or upload that the suite makes.
+var idPaths = []struct {
+	re   *regexp.Regexp
+	repl string
+}{
+	{regexp.MustCompile(`^/v1/tests/\d+$`), "/v1/tests/{job}"},
+	{regexp.MustCompile(`^/v1/groups/\d+(/update)?$`), "/v1/groups/{group}$1"},
+	{regexp.MustCompile(`^/v1/backups/\d+$`), "/v1/backups/{backup}"},
+	{regexp.MustCompile(`^/v1/restores/\d+(/apply)?$`), "/v1/restores/{upload}$1"},
+}
 
 func normalizePath(path string) string {
-	if jobPath.MatchString(path) {
-		return "/v1/tests/{job}"
+	for _, p := range idPaths {
+		if p.re.MatchString(path) {
+			return p.re.ReplaceAllString(path, p.repl)
+		}
 	}
 	return path
 }
@@ -141,6 +159,40 @@ func jobView(id int) func(any) any {
 	}
 }
 
+// maskView masks the values at these dotted paths, such as "group.id": IDs of what the
+// suite makes, which differ from run to run.
+func maskView(paths ...string) func(any) any {
+	return func(v any) any {
+		for _, p := range paths {
+			keys := strings.Split(p, ".")
+			m, _ := v.(map[string]any)
+			for _, k := range keys[:len(keys)-1] {
+				m, _ = m[k].(map[string]any)
+			}
+			if leaf := keys[len(keys)-1]; m != nil {
+				if _, ok := m[leaf]; ok {
+					m[leaf] = masked
+				}
+			}
+		}
+		return v
+	}
+}
+
+// ruleSetView masks why rule-sets failed to download, which depends on the network.
+func ruleSetView(v any) any {
+	m, _ := v.(map[string]any)
+	failures, _ := m["failures"].([]any)
+	for _, f := range failures {
+		if fm, ok := f.(map[string]any); ok {
+			if _, ok := fm["error"]; ok {
+				fm["error"] = masked
+			}
+		}
+	}
+	return v
+}
+
 // cancelView reduces a job that a cancel raced: cancelled and done are both correct
 // outcomes, and its profiles are a whole group.
 func cancelView(v any) any {
@@ -194,14 +246,15 @@ type caller interface {
 }
 
 // exchange is one request to send and record. view, when set, reshapes the response
-// before it is masked.
+// before it is masked, and bodyView the request body.
 type exchange struct {
-	step   string
-	method string
-	path   string
-	query  map[string]string
-	body   map[string]any
-	view   func(any) any
+	step     string
+	method   string
+	path     string
+	query    map[string]string
+	body     map[string]any
+	view     func(any) any
+	bodyView func(any) any
 }
 
 func (x exchange) request() *request {
@@ -211,7 +264,7 @@ func (x exchange) request() *request {
 		if err != nil {
 			panic(err)
 		}
-		r.Body = normalize(b, nil)
+		r.Body = normalize(b, x.bodyView)
 	}
 	return r
 }

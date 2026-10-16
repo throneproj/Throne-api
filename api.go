@@ -9,7 +9,8 @@ import (
 	"time"
 )
 
-// pollInterval is how often RunTest asks for a Job that still runs.
+// pollInterval is how often RunTest asks for a Job that still runs, Backup for an
+// archive that Throne still builds, and UploadRestore for one that Throne still checks.
 var pollInterval = time.Second
 
 // api implements the requests of Client and Session.
@@ -167,7 +168,13 @@ func (a api) SetRoute(ctx context.Context, id int, opts ...Option) (*Status, err
 // change sends a request that changes the connection, with the waiting fields, and
 // returns the Status.
 func (a api) change(ctx context.Context, method, path string, body map[string]any, o options) (*Status, error) {
-	wait := defaultWait
+	return fetch[Status](ctx, a, waiting(ctx, method, path, body, o, defaultWait))
+}
+
+// waiting returns a call with the waiting fields added to body; def is the timeout Throne
+// applies when the body names none.
+func waiting(ctx context.Context, method, path string, body map[string]any, o options, def time.Duration) *call {
+	wait := def
 	if o.noWait {
 		body["wait"] = false
 		wait = 0
@@ -178,7 +185,7 @@ func (a api) change(ctx context.Context, method, path string, body map[string]an
 	if len(body) > 0 {
 		r.body = body
 	}
-	return fetch[Status](ctx, a, r)
+	return r
 }
 
 // StartTest starts a test of the selected profiles (POST /v1/tests) and returns its Job
@@ -198,12 +205,8 @@ func (a api) RunTest(ctx context.Context, kind TestKind, sel Selection) (*Job, e
 	}
 	job, err := fetch[Job](ctx, a, &call{method: "POST", path: "/v1/tests", body: body, wait: maxWait})
 	for err == nil && job.State == JobRunning {
-		t := time.NewTimer(pollInterval)
-		select {
-		case <-ctx.Done():
-			t.Stop()
-			return job, fmt.Errorf("throne: %w", ctx.Err())
-		case <-t.C:
+		if err := pause(ctx); err != nil {
+			return job, err
 		}
 		var next *Job
 		if next, err = a.Job(ctx, job.ID); err == nil {
@@ -325,15 +328,18 @@ type TrafficQuery struct {
 	From, To time.Time
 }
 
-// An Option adjusts a request that changes the connection: Connect, ConnectLast,
-// ConnectLowestLatency, Disconnect, SetModes and SetRoute. Each Option says which of
-// them it affects; the others ignore it.
+// An Option adjusts a request that changes something and can wait for it: Connect,
+// ConnectLast, ConnectLowestLatency, Disconnect, SetModes and SetRoute, and the management
+// requests Import, AddGroup, UpdateGroup, UpdateGroups, DeleteGroup, DeleteProfiles,
+// UpdateRuleSets, UpdateGeoAssets, Backup and ApplyRestore. Each Option says which of them
+// it affects; the others ignore it.
 type Option func(*options)
 
 type options struct {
-	noWait  bool
-	restart bool
-	maxAge  *int
+	noWait      bool
+	restart     bool
+	maxAge      *int
+	onlyMissing bool
 }
 
 func collect(opts []Option) options {
@@ -344,9 +350,10 @@ func collect(opts []Option) options {
 	return o
 }
 
-// NoWait makes Throne respond at once with the current Status, rather than when the
-// change has finished; the change carries on in Throne. It affects every request that
-// takes Options.
+// NoWait makes Throne respond at once, rather than when the change has finished; the
+// change carries on in Throne. The requests that change the connection then return the
+// current Status, and the others what their documentation gives for a wait that ended
+// first. It affects every request that takes Options.
 func NoWait() Option {
 	return func(o *options) { o.noWait = true }
 }
@@ -362,6 +369,23 @@ func Restart() Option {
 func MaxAge(d time.Duration) Option {
 	s := max(int(d/time.Second), 0)
 	return func(o *options) { o.maxAge = &s }
+}
+
+// OnlyMissing makes UpdateGeoAssets skip the files that are present.
+func OnlyMissing() Option {
+	return func(o *options) { o.onlyMissing = true }
+}
+
+// pause waits pollInterval, or returns ctx's error when ctx ends first.
+func pause(ctx context.Context) error {
+	t := time.NewTimer(pollInterval)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("throne: %w", ctx.Err())
+	case <-t.C:
+		return nil
+	}
 }
 
 // timeoutFor turns ctx's deadline into the timeout field: the time left minus a margin,

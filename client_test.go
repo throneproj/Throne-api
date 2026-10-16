@@ -33,7 +33,8 @@ const statusJSON = `{"state":"running","profile":{"id":0,"group":0,"name":"DE Fr
 	`"upload_bps":9100000,"country":"DE","ip_out":"203.0.113.7","traffic_up":1048576,` +
 	`"traffic_down":73400320,"running":true},"last_profile_id":0,"tun":true,"system_proxy":false,` +
 	`"route":{"id":1,"name":"Default","active":true},"kill_switch":"off","core":true,` +
-	`"inbound":{"enabled":true,"address":"127.0.0.1","port":2080},"version":"1.4.0"}`
+	`"inbound":{"enabled":true,"address":"127.0.0.1","port":2080},"version":"1.4.0",` +
+	`"capabilities":{"tun":true,"kill_switch":false,"headless":true},"restart_needed":true,"degraded":null}`
 
 func mustKey(t *testing.T, text string) throne.Key {
 	t.Helper()
@@ -226,12 +227,14 @@ func TestStatus(t *testing.T) {
 			Address: "de1.example.com:443", LatencyMS: 85, LatencyAt: 1760000000, DownloadBPS: 48300000,
 			UploadBPS: 9100000, Country: "DE", IPOut: "203.0.113.7", TrafficUp: 1048576,
 			TrafficDown: 73400320, Running: true},
-		Tun:        true,
-		Route:      throne.Route{ID: 1, Name: "Default", Active: true},
-		KillSwitch: "off",
-		Core:       true,
-		Inbound:    throne.Inbound{Enabled: true, Address: "127.0.0.1", Port: 2080},
-		Version:    "1.4.0",
+		Tun:           true,
+		Route:         throne.Route{ID: 1, Name: "Default", Active: true},
+		KillSwitch:    "off",
+		Core:          true,
+		Inbound:       throne.Inbound{Enabled: true, Address: "127.0.0.1", Port: 2080},
+		Version:       "1.4.0",
+		Capabilities:  throne.Capabilities{Tun: true, Headless: true},
+		RestartNeeded: true,
 	}
 	if !reflect.DeepEqual(st, want) {
 		t.Fatalf("Status = %+v, want %+v", st, want)

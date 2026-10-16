@@ -60,10 +60,17 @@ func TestNormalizeMasksJobIDOnly(t *testing.T) {
 
 func TestNormalizePath(t *testing.T) {
 	for in, want := range map[string]string{
-		"/v1/tests/42":     "/v1/tests/{job}",
-		"/v1/tests":        "/v1/tests",
-		"/v1/profiles/42":  "/v1/profiles/42",
-		"/v1/tests/42/foo": "/v1/tests/42/foo",
+		"/v1/tests/42":          "/v1/tests/{job}",
+		"/v1/tests":             "/v1/tests",
+		"/v1/profiles/42":       "/v1/profiles/42",
+		"/v1/tests/42/foo":      "/v1/tests/42/foo",
+		"/v1/groups/7":          "/v1/groups/{group}",
+		"/v1/groups/7/update":   "/v1/groups/{group}/update",
+		"/v1/groups/update":     "/v1/groups/update",
+		"/v1/backups/3":         "/v1/backups/{backup}",
+		"/v1/restores/4":        "/v1/restores/{upload}",
+		"/v1/restores/4/apply":  "/v1/restores/{upload}/apply",
+		"/v1/restores/4/cancel": "/v1/restores/4/cancel",
 	} {
 		if got := normalizePath(in); got != want {
 			t.Errorf("normalizePath(%q) = %q, want %q", in, got, want)
@@ -88,6 +95,30 @@ func TestViews(t *testing.T) {
 		if got != `{"id":"<masked>","kind":"latency","profile_ids":"<masked>","results":"<masked>","state":"cancelled|done"}` {
 			t.Errorf("cancelView(%s): %s", state, got)
 		}
+	}
+	group := []byte(`{"group":{"id":9,"name":"x","profile_count":0},"profile_ids":[40,41],"update":null}`)
+	got = compact(normalize(group, maskView("group.id", "profile_ids", "missing", "update.ok", "name.x")))
+	if got != `{"group":{"id":"<masked>","name":"x","profile_count":"<masked>"},"profile_ids":"<masked>","update":null}` {
+		t.Errorf("maskView: %s", got)
+	}
+	rules := []byte(`{"updated":2,"failures":[{"tag":"geosite-x","error":"dial tcp: timeout"}]}`)
+	got = compact(normalize(rules, ruleSetView))
+	if got != `{"failures":[{"error":"<masked>","tag":"geosite-x"}],"updated":2}` {
+		t.Errorf("ruleSetView: %s", got)
+	}
+	backup := []byte(`{"id":1,"size":1234,"sha256":"ab12","parts":["profiles"],"archive":{"created_at":"Thu Oct 16","platform":"linux"}}`)
+	got = compact(normalize(backup, nil))
+	if got != `{"archive":{"created_at":"<masked>","platform":"linux"},"id":1,"parts":["profiles"],"sha256":"<masked>","size":"<masked>"}` {
+		t.Errorf("archive values: %s", got)
+	}
+}
+
+func TestRequestBodyView(t *testing.T) {
+	x := exchange{step: "import", method: "POST", path: "/v1/groups/12/update",
+		body: map[string]any{"group": 12, "text": "a"}, bodyView: maskView("group")}
+	got := compact(x.request())
+	if got != `{"method":"POST","path":"/v1/groups/{group}/update","body":{"group":"<masked>","text":"a"}}` {
+		t.Errorf("request: %s", got)
 	}
 }
 

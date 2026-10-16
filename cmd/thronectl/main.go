@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,7 +24,7 @@ import (
 var version = "dev"
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.Getenv))
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, os.Getenv))
 }
 
 type command struct {
@@ -60,6 +61,28 @@ func init() {
 		{"clear", "(--group N [--name REGEX] | <id>...)", "Clear the test results of profiles.", cmdClear},
 		{"live", "", "Show the current traffic rates.", cmdLive},
 		{"traffic", "[--by profile | app] [--since 24h]", "Show traffic totals.", cmdTraffic},
+		{"import", "[--group N] (FILE | - | --url URL) [--no-wait]",
+			"Import profiles from a file, standard input or a URL. A file or standard input holds share links, a " +
+				"subscription body, a Clash, sing-box or Xray configuration, or a WireGuard or OpenVPN file, of at " +
+				"most 900 KiB; with --url Throne downloads the URL once.", cmdImport},
+		{"sub", "add <url> [--name NAME] [--no-auto-update] [--no-update] | update (<id>... | --all) [--no-wait]",
+			"Add a subscription group, or update subscriptions. A failed update makes the exit status 1.", cmdSub},
+		{"group", "add <name> | rm <id> [--no-wait]", "Add a group, or delete one with its profiles.", cmdGroup},
+		{"profile", "rm (<id>... | --group N [--name REGEX]) [--no-wait]", "Delete profiles.", cmdProfile},
+		{"settings", "[get] [KEY...] | set KEY=VALUE...",
+			"Show or change settings. A VALUE of true, false or a number is sent as one, anything else as text.", cmdSettings},
+		{"backup", "create [-o FILE] [--parts LIST] | restore FILE [--parts LIST] [--yes]",
+			"Back up Throne's data to a file, or restore it from one. Archives hold credentials in plain text. " +
+				"LIST is comma-separated parts: profiles, routes, settings, otp, ip_lists and icons. restore " +
+				"shows the archive and asks before it replaces anything; Throne then restarts.", cmdBackup},
+		{"rulesets", "update [--no-wait]",
+			"Update the remote rule-sets of the running profile. A failed rule-set makes the exit status 1.", cmdRuleSets},
+		{"geo", "[status] | update [geoip | geosite]... [--only-missing] [--no-wait]",
+			"Show or update the geoip and geosite files. Downloads can take minutes: raise --timeout, or use " +
+				"--no-wait. A failed file makes the exit status 1.", cmdGeo},
+		{"restart", "", "Restart Throne.", cmdRestart},
+		{"shutdown", "[--yes]", "Make Throne exit. It asks first, unless --yes is given.", cmdShutdown},
+		{"keygen", "[-o FILE]", "Generate a new Throne API key. It does not connect to Throne.", cmdKeygen},
 		{"call", "<METHOD> <PATH> [key=value ...] [--body JSON]",
 			"Send any request and print the response body.", cmdCall},
 		{"version", "", "Print the version.", cmdVersion},
@@ -67,6 +90,7 @@ func init() {
 }
 
 type cli struct {
+	stdin          io.Reader
 	stdout, stderr io.Writer
 	getenv         func(string) string
 
@@ -80,8 +104,9 @@ type cli struct {
 	cancel context.CancelFunc
 }
 
-func run(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
-	c := &cli{stdout: stdout, stderr: stderr, getenv: getenv, addr: getenv("THRONE_ADDR"), timeout: 30 * time.Second}
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
+	c := &cli{stdin: stdin, stdout: stdout, stderr: stderr, getenv: getenv, addr: getenv("THRONE_ADDR"),
+		timeout: 30 * time.Second}
 	if c.addr == "" {
 		c.addr = throne.DefaultAddr
 	}
@@ -225,11 +250,51 @@ func (c *cli) open() (*throne.Client, context.Context, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	return throne.New(c.addr, key), c.context(), nil
+}
+
+// context returns a new context for the command's calls, with the whole --timeout, and
+// ends the one before. Commands that ask a question take a new one after the answer.
+func (c *cli) context() context.Context {
+	if c.cancel != nil {
+		c.cancel()
+		c.cancel = nil
+	}
 	ctx := rawbody.With(context.Background(), &c.raw)
 	if c.timeout > 0 {
 		ctx, c.cancel = context.WithTimeout(ctx, c.timeout)
 	}
-	return throne.New(c.addr, key), ctx, nil
+	return ctx
+}
+
+// isTerminal says whether r is a terminal, on which thronectl can ask for confirmation.
+var isTerminal = func(r io.Reader) bool {
+	f, ok := r.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// canConfirm checks, before any work, that a command that asks first can go on: yes was
+// given, or there is a terminal to ask on.
+func (c *cli) canConfirm(yes bool, what string) error {
+	if !yes && !isTerminal(c.stdin) {
+		return c.usageErr("standard input is not a terminal to confirm on: add --yes to %s without asking", what)
+	}
+	return nil
+}
+
+// ask asks a question on the terminal; any answer but y or yes is no.
+func (c *cli) ask(question string) bool {
+	fmt.Fprintf(c.stderr, "%s [y/N] ", question)
+	line, _ := bufio.NewReader(c.stdin).ReadString('\n')
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes":
+		return true
+	}
+	return false
 }
 
 func (c *cli) key() (throne.Key, error) {
@@ -276,8 +341,17 @@ func (c *cli) usageErr(format string, args ...any) error {
 	return usageError{msg: fmt.Sprintf(format, args...), cmd: c.cmd}
 }
 
+// failure is work that failed in part, which the output shows, or a confirmation that was
+// declined: exit status 1.
+type failure struct {
+	msg string
+}
+
+func (e failure) Error() string { return e.msg }
+
 func (c *cli) exit(err error) int {
 	var uerr usageError
+	var ferr failure
 	var apiErr *throne.APIError
 	var opErr *net.OpError
 	switch {
@@ -292,6 +366,9 @@ func (c *cli) exit(err error) int {
 			fmt.Fprintf(c.stderr, "thronectl: %s\n", uerr.msg)
 		}
 		return 2
+	case errors.As(err, &ferr):
+		fmt.Fprintf(c.stderr, "error: %s\n", ferr.msg)
+		return 1
 	case errors.As(err, &apiErr):
 		fmt.Fprintf(c.stderr, "error: %s: %s\n", clean(apiErr.Code), clean(apiErr.Message))
 		return 1

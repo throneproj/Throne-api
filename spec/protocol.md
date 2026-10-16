@@ -147,7 +147,8 @@ The protocol does not provide the following:
 - Forward secrecy. Anyone who learns the key can decrypt traffic they recorded earlier.
   Generating a new key in Throne ends this for future connections.
 - Hiding that a connection exists, when it is used or how large its messages are.
-- Limits on what a key holder can do. The key grants every request in api.md.
+- Limits on what a key holder can do. The key grants every request in api.md; only the
+  client's address limits the admin requests (see [Scope](api.md#scope)).
 
 Implementations must:
 

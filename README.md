@@ -3,7 +3,9 @@
 The Throne API lets scripts on the same machine or the LAN control
 [Throne](https://github.com/throneproj/Throne): start and stop profiles, switch Tun mode and
 the system proxy, change the routing profile, run latency, IP and speed tests, and read
-profiles and traffic statistics. Every request is encrypted and authenticated with a key that
+profiles and traffic statistics. It also manages Throne: imports profiles, adds and updates
+subscriptions, deletes groups and profiles, changes settings, backs up and restores, and
+restarts or shuts down Throne. Every request is encrypted and authenticated with a key that
 Throne generates.
 
 This repository holds:
@@ -66,19 +68,46 @@ Flags work before or after the command.
 | `clear (--group N [--name REGEX] \| <id>...)` | Clear test results |
 | `live` | Current traffic rates |
 | `traffic [--by profile \| app] [--since 24h]` | Traffic totals; `--since` also takes days, such as `7d` |
+| `import [--group N] (FILE \| - \| --url URL)` | Import share links, a subscription body, or a Clash, sing-box, Xray, WireGuard or OpenVPN configuration from a file of up to 900 KiB or standard input (`-`), or have Throne download a URL once. Default group: the one Throne shows |
+| `sub add <url> [--name NAME] [--no-auto-update] [--no-update]` | Add a subscription group, named after the URL's host by default, and download it |
+| `sub update (<id>... \| --all)` | Update subscription groups, or all that are not archived |
+| `group add <name>`, `group rm <id>` | Add a group; delete a group with its profiles |
+| `profile rm (<id>... \| --group N [--name REGEX])` | Delete profiles |
+| `settings [get] [KEY...]`, `settings set KEY=VALUE...` | Show or change the [settings](spec/api.md#settings) the API manages. `true`, `false` and numbers are sent as such, anything else as text |
+| `backup create [-o FILE] [--parts LIST]` | Write a backup archive, by default to `throne-backup-<time>.thrbackup` |
+| `backup restore FILE [--parts LIST] [--yes]` | Show an archive, ask, restore it and restart Throne. Default parts: `profiles,routes,otp,ip_lists` |
+| `rulesets update` | Update the remote rule-sets of the running profile |
+| `geo`, `geo update [geoip \| geosite]... [--only-missing]` | Show the geo files, download them again |
+| `restart`, `shutdown [--yes]` | Restart Throne; make it exit, after asking |
+| `keygen [-o FILE]` | Generate a new key: print it, or write it to a new file that only you can read |
 | `call <METHOD> <PATH> [key=value ...] [--body JSON]` | Send any request from [api.md](spec/api.md) and print the response body |
 | `version` | Print thronectl's version |
 
 `thronectl help <command>` describes a command. `--name` is a case-insensitive regular
-expression; quote it in the shell.
+expression; quote it in the shell. `--parts` takes a comma-separated list of `profiles`,
+`routes`, `settings`, `otp`, `ip_lists` (or `ip-lists`) and `icons`.
 
 Requests that start or stop a profile wait for the result, up to `--timeout`. If Throne needs
 longer it answers with the current state, such as `connecting`, and finishes on its own;
-thronectl exits with 0. Tests can take minutes, so give them a longer `--timeout`; a test that
-outlasts it keeps running in Throne (`thronectl job <id>`).
+thronectl exits with 0. Imports, updates, deletes and downloads wait the same way, and say so
+when they are still running in Throne; `--no-wait` returns at once. Tests and geo downloads
+can take minutes, so give them a longer `--timeout`; a test that outlasts it keeps running in
+Throne (`thronectl job <id>`).
 
-Exit status: 0 success, 1 error from Throne (printed as `error: <code>: <message>`), 2 usage
-error, 3 no connection or a rejected key.
+`import`, `sub add`, `group`, `profile rm`, `settings set`, `backup`, `restart` and
+`shutdown` send admin requests. Throne answers them only on its own device, unless
+**Allow management from the local network** is on in its Throne API settings; elsewhere
+they fail with `forbidden`. Backup archives hold your profiles' credentials and OTP secrets
+in plain text: thronectl creates them readable only by you, so keep them that way.
+Throne refuses to `backup restore` an archive whose profiles would run programs or read
+files on its device, such as Extra Core profiles (`invalid_archive`); restore such an archive
+in Throne's window. `backup restore` and `shutdown` ask before they act; without a terminal
+to ask on, they need `--yes`.
+
+Exit status: 0 success, 1 error from Throne (printed as `error: <code>: <message>`), an update
+of a subscription, a rule-set or a geo file that failed, or a confirmation answered no, 2
+usage error, 3 no connection, a rejected key, or another error such as a file that cannot be
+read.
 
 ### Examples
 
@@ -92,6 +121,12 @@ thronectl route 2
 thronectl --timeout 2m test latency --group 3
 thronectl traffic --by app --since 7d
 thronectl call GET /v1/profiles group=3
+thronectl import links.txt --group 3
+thronectl sub add 'https://sub.example.com/abc' --name Provider
+thronectl --timeout 2m sub update --all
+thronectl settings set log_level=debug test_url=https://cp.cloudflare.com/
+thronectl backup create -o throne.thrbackup
+thronectl backup restore throne.thrbackup --parts profiles,routes
 ```
 
 Speed-test the profiles of group 3 whose names match `DE` or `NL`, then connect the fastest
@@ -176,13 +211,20 @@ func main() {
 Every request in [api.md](spec/api.md) has a method: `Status`, `Groups`, `Profiles`,
 `Profile`, `Connect`, `ConnectLast`, `ConnectLowestLatency`, `Disconnect`, `SetModes`,
 `Routes`, `SetRoute`, `StartTest`, `RunTest`, `Jobs`, `Job`, `CancelJob`, `ClearResults`,
-`LiveStats` and `Traffic`; `Call` sends anything else. A `Client` opens one connection per
-call; `Client.Dial` opens a `Session` that carries several calls over one connection.
+`LiveStats` and `Traffic`. The management requests have `Import`, `AddGroup`,
+`UpdateGroup`, `UpdateGroups`, `DeleteGroup`, `DeleteProfiles`, `Settings`, `SetSettings`,
+`UpdateRuleSets`, `GeoAssets`, `UpdateGeoAssets`, `Restart` and `Shutdown`; `Backup` writes
+a backup archive to an `io.Writer`, and `UploadRestore`, `RestoreStatus`, `ApplyRestore` and
+`CancelRestore` restore one. `Call` sends anything else. A `Client` opens one connection per call;
+`Client.Dial` opens a `Session` that carries several calls over one connection.
 
-- Requests that change the connection wait for the result. With a deadline in `ctx`, Throne
-  gets a `timeout` that ends a little before it; when that passes, the call returns the
-  current `Status`, in state `connecting` for example, without an error. `throne.NoWait()`
-  returns at once.
+- Requests that change something wait for the result. With a deadline in `ctx`, Throne
+  gets a `timeout` that ends a little before it; when that passes, the call returns what
+  Throne has so far without an error: for a connection change the current `Status`, in state
+  `connecting` for example. `throne.NoWait()` returns at once.
+- Admin requests, which import, delete, change settings, back up, restore, restart and shut
+  down, are answered only from Throne's own device unless Throne allows management from the
+  local network; elsewhere they fail with `throne.CodeForbidden`.
 - ID 0 is a valid group and profile ID. Select profiles with `throne.SelectGroup(id, regex)`
   or `throne.SelectProfiles(ids...)`.
 
@@ -211,7 +253,9 @@ case err != nil:
 
 - The key grants every request in [api.md](spec/api.md): whoever holds it controls Throne's
   connection, modes and routing, and can read your profiles' names, addresses, test results
-  and traffic.
+  and traffic. On Throne's own device, or from the LAN when Throne allows management from
+  there, it also imports, deletes, changes settings and makes backups, which hold your
+  profiles' credentials in plain text.
 - Keep the key out of command lines and shell history: use a key file that only you can read,
   or `THRONE_KEY` from a secret store. thronectl never accepts the key as an argument.
 - Traffic is encrypted and authenticated, on a LAN too, but there is no forward secrecy:

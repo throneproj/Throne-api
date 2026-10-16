@@ -3,12 +3,16 @@
 package live
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -29,16 +33,28 @@ const (
 	testLimit   = 5 * time.Minute
 	pollEvery   = 500 * time.Millisecond
 	burstSize   = 6
+	// exitLimit bounds the wait for Throne to exit after a restart or a shutdown, and
+	// backLimit the wait for it to answer again after a restart.
+	exitLimit = 60 * time.Second
+	backLimit = 2 * time.Minute
+)
+
+// scratchName names the group the suite adds and deletes again; it is the same in every
+// run, and so are the profiles it imports into it, which nothing connects to.
+const (
+	scratchName  = "throne-live scratch"
+	scratchLinks = "socks5://127.0.0.1:1080#throne-live-1\nsocks5://127.0.0.1:1081#throne-live-2"
 )
 
 type config struct {
-	profile  int
-	profile2 int // -1 when unset
-	route    int // -1 when unset
-	dir      string
-	tun      bool
-	proxy    bool
-	killCore bool
+	profile     int
+	profile2    int // -1 when unset
+	route       int // -1 when unset
+	dir         string
+	tun         bool
+	proxy       bool
+	killCore    bool
+	destructive bool
 }
 
 func envID(name string, required bool) (int, error) {
@@ -79,6 +95,7 @@ func loadConfig(t *testing.T) config {
 	cfg.tun = os.Getenv("THRONE_LIVE_ALLOW_TUN") == "1"
 	cfg.proxy = os.Getenv("THRONE_LIVE_SYSTEM_PROXY") == "1"
 	cfg.killCore = os.Getenv("THRONE_LIVE_KILL_CORE") == "1"
+	cfg.destructive = os.Getenv("THRONE_LIVE_DESTRUCTIVE") == "1"
 	return cfg
 }
 
@@ -86,6 +103,11 @@ type suite struct {
 	c    *throne.Client
 	cfg  config
 	orig throne.Status
+	tmp  string
+	// archive is the backup archive the backup subtest downloaded, for the restore.
+	archive string
+	// exited says that the shutdown subtest made Throne exit.
+	exited bool
 
 	mu   sync.Mutex
 	jobs []int
@@ -97,7 +119,7 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &suite{c: c, cfg: cfg}
+	s := &suite{c: c, cfg: cfg, tmp: t.TempDir()}
 	ctx, cancel := context.WithTimeout(t.Context(), settleLimit)
 	st, err := s.settle(ctx)
 	cancel()
@@ -123,6 +145,15 @@ func TestLive(t *testing.T) {
 		{"cancel", s.testCancel},
 		{"modes", s.testModes},
 		{"core-kill", s.testCoreKill},
+		{"capabilities", s.testCapabilities},
+		{"settings", s.testSettings},
+		{"scratch-group", s.testScratchGroup},
+		{"geo", s.testGeo},
+		{"rule-sets", s.testRuleSets},
+		{"backup", s.testBackup},
+		{"restore", s.testRestore},
+		{"restart", s.testRestart},
+		{"shutdown", s.testShutdown},
 	}
 	for i, step := range steps {
 		t.Run(step.name, func(t *testing.T) {
@@ -797,8 +828,556 @@ func (s *suite) testCoreKill(t *testing.T, r *recorder) {
 	}
 }
 
+// admin skips the subtest when err says that Throne refuses admin requests from here.
+func (s *suite) admin(t *testing.T, r *recorder, err error) {
+	t.Helper()
+	if throne.ErrorCode(err) == throne.CodeForbidden {
+		r.skip(t, "Throne answers admin requests only on its own device: run the suite there, "+
+			"or allow management from the local network")
+	}
+}
+
+// wantCode fails the test unless err is an error response with this code.
+func wantCode(t *testing.T, step string, err error, code string) {
+	t.Helper()
+	if throne.ErrorCode(err) != code {
+		t.Errorf("%s: got %v, want %s", step, err, code)
+	}
+}
+
+// drop deletes, unrecorded, a group, backup or upload that a failed subtest left.
+func (s *suite) drop(t *testing.T, path string) {
+	ctx, cancel := context.WithTimeout(context.Background(), changeLimit)
+	defer cancel()
+	if err := s.c.Call(ctx, "DELETE", path, nil, nil, nil); err != nil && throne.ErrorCode(err) != throne.CodeNotFound {
+		t.Logf("delete %s: %v", path, err)
+	}
+}
+
+// watch opens a Session, whose connection ends when Throne exits.
+func (s *suite) watch(t *testing.T) *throne.Session {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), readLimit)
+	defer cancel()
+	sess, err := s.c.Dial(ctx)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	return sess
+}
+
+// awaitExit polls on sess, unrecorded, until its connection ends: that Throne has exited.
+// A new connection could already reach the Throne that replaces it.
+func (s *suite) awaitExit(t *testing.T, sess *throne.Session) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), exitLimit)
+	defer cancel()
+	for {
+		if _, err := sess.Status(ctx); err != nil && throne.ErrorCode(err) == "" && ctx.Err() == nil {
+			return
+		}
+		if pause(ctx, 200*time.Millisecond) != nil {
+			t.Fatalf("Throne did not exit within %v", exitLimit)
+		}
+	}
+}
+
+// awaitBack polls, unrecorded, until Throne answers again and has settled; with running,
+// until it runs a profile.
+func (s *suite) awaitBack(t *testing.T, running bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), backLimit)
+	defer cancel()
+	for {
+		st, err := s.c.Status(ctx)
+		if err == nil && settled(st) && (!running || st.State == throne.StateRunning) {
+			return
+		}
+		if pause(ctx, pollEvery) != nil {
+			if err == nil {
+				err = fmt.Errorf("still %s", describe(st))
+			}
+			t.Fatalf("Throne is not back within %v: %v", backLimit, err)
+		}
+	}
+}
+
+func (s *suite) testCapabilities(t *testing.T, r *recorder) {
+	s.mustSettle(t)
+	view := func(v any) any {
+		m, _ := v.(map[string]any)
+		return map[string]any{"capabilities": m["capabilities"], "restart_needed": m["restart_needed"], "degraded": m["degraded"]}
+	}
+	var st map[string]any
+	s.get(t, r, "status", "/v1/status", nil, &st, view)
+	caps, ok := st["capabilities"].(map[string]any)
+	if !ok {
+		t.Fatalf("capabilities %v, want an object", st["capabilities"])
+	}
+	for _, k := range []string{"tun", "kill_switch", "headless"} {
+		if _, ok := caps[k].(bool); !ok {
+			t.Errorf("capabilities.%s %v, want a bool", k, caps[k])
+		}
+	}
+	if _, ok := st["restart_needed"].(bool); !ok {
+		t.Errorf("restart_needed %v, want a bool", st["restart_needed"])
+	}
+	degraded, present := st["degraded"]
+	var want any
+	if st["kill_switch"] == "failed" {
+		want = throne.DegradedKillSwitchFailed
+	}
+	if !present || degraded != want {
+		t.Errorf("degraded %v (present %v), want %v", degraded, present, want)
+	}
+}
+
+func (s *suite) testSettings(t *testing.T, r *recorder) {
+	var got struct {
+		Settings map[string]any `json:"settings"`
+	}
+	s.get(t, r, "settings", "/v1/settings", nil, &got, nil)
+	orig, ok := got.Settings["test_url"].(string)
+	if !ok {
+		t.Fatalf("test_url %v, want a string", got.Settings["test_url"])
+	}
+	alt := "https://www.gstatic.com/generate_204"
+	if orig == alt {
+		alt = "http://cp.cloudflare.com/"
+	}
+	put := func(step string, values map[string]any, out *throne.SettingsChange) error {
+		t.Helper()
+		var dst any
+		if out != nil {
+			dst = out
+		}
+		return s.call(t, r, readLimit, exchange{step: step, method: "PUT", path: "/v1/settings",
+			body: map[string]any{"settings": values}}, dst)
+	}
+
+	var ch throne.SettingsChange
+	err := put("change test_url", map[string]any{"test_url": alt}, &ch)
+	s.admin(t, r, err)
+	if err != nil {
+		t.Fatalf("change test_url: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), readLimit)
+		defer cancel()
+		if now, err := s.c.Settings(ctx); err == nil && now["test_url"] != orig {
+			if _, err := s.c.SetSettings(ctx, map[string]any{"test_url": orig}); err != nil {
+				t.Logf("put back test_url: %v", err)
+			}
+		}
+	})
+	if !slices.Equal(ch.Changed, []string{"test_url"}) || ch.Settings["test_url"] != alt {
+		t.Errorf("change test_url: changed %v, test_url %v", ch.Changed, ch.Settings["test_url"])
+	}
+	ch = throne.SettingsChange{}
+	if err := put("same test_url", map[string]any{"test_url": alt}, &ch); err != nil {
+		t.Fatalf("same test_url: %v", err)
+	}
+	if len(ch.Changed) != 0 {
+		t.Errorf("same test_url: changed %v", ch.Changed)
+	}
+
+	// Throne checks every value before it writes any.
+	wantCode(t, "one bad value", put("one bad value", map[string]any{"test_url": orig, "test_concurrency": 0}, nil),
+		throne.CodeBadRequest)
+	wantCode(t, "bad URL", put("bad URL", map[string]any{"test_url": "ftp://example.com/"}, nil), throne.CodeBadRequest)
+	wantCode(t, "unknown setting", put("unknown setting", map[string]any{"no_such_setting": true}, nil), throne.CodeBadRequest)
+	ctx, cancel := context.WithTimeout(t.Context(), readLimit)
+	now, err := s.c.Settings(ctx)
+	cancel()
+	if err != nil || now["test_url"] != alt {
+		t.Errorf("after refused changes: test_url %v, %v; want %s", now["test_url"], err, alt)
+	}
+
+	ch = throne.SettingsChange{}
+	if err := put("restore test_url", map[string]any{"test_url": orig}, &ch); err != nil {
+		t.Fatalf("restore test_url: %v", err)
+	}
+	if !slices.Equal(ch.Changed, []string{"test_url"}) || ch.Settings["test_url"] != orig {
+		t.Errorf("restore test_url: changed %v, test_url %v", ch.Changed, ch.Settings["test_url"])
+	}
+}
+
+func (s *suite) testScratchGroup(t *testing.T, r *recorder) {
+	var added throne.GroupResult
+	x := exchange{step: "add group", method: "POST", path: "/v1/groups", body: map[string]any{"name": scratchName},
+		view: maskView("group.id")}
+	err := s.call(t, r, readLimit, x, &added)
+	s.admin(t, r, err)
+	if err != nil {
+		t.Fatalf("add group: %v", err)
+	}
+	gid := added.Group.ID
+	path := "/v1/groups/" + strconv.Itoa(gid)
+	t.Cleanup(func() { s.drop(t, path) })
+	if added.Group.Name != scratchName || added.Group.Subscription || added.Update != nil {
+		t.Errorf("added %+v, update %v", added.Group, added.Update)
+	}
+
+	var imp throne.ImportResult
+	x = exchange{step: "import", method: "POST", path: "/v1/import",
+		body:     map[string]any{"as": "profiles", "text": scratchLinks, "group": gid, "timeout": changeWait},
+		bodyView: maskView("group"), view: maskView("group", "profile_ids")}
+	if err := s.call(t, r, changeLimit, x, &imp); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if imp.Group != gid || imp.Imported != 2 || len(imp.ProfileIDs) != 2 {
+		t.Fatalf("import: %+v", imp)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), readLimit)
+	profiles, err := s.c.Profiles(ctx, throne.SelectGroup(gid, ""))
+	cancel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := profileIDs(profiles); !sameIDs(got, imp.ProfileIDs) {
+		t.Errorf("group %d holds %v, want %v", gid, got, imp.ProfileIDs)
+	}
+	for _, p := range profiles {
+		if p.Type != "socks" || !strings.HasPrefix(p.Name, "throne-live-") {
+			t.Errorf("imported %s profile %q", p.Type, p.Name)
+		}
+	}
+	err = s.call(t, r, changeLimit, exchange{step: "import nothing", method: "POST", path: "/v1/import",
+		body: map[string]any{"as": "profiles", "text": "not a profile", "group": gid}, bodyView: maskView("group")}, nil)
+	wantCode(t, "import nothing", err, throne.CodeNothingImported)
+
+	var del throne.Deletion
+	x = exchange{step: "delete profile", method: "DELETE", path: "/v1/profiles",
+		body: map[string]any{"profiles": imp.ProfileIDs[:1], "timeout": changeWait}, bodyView: maskView("profiles")}
+	if err := s.call(t, r, changeLimit, x, &del); err != nil {
+		t.Fatalf("delete profile: %v", err)
+	}
+	if del != (throne.Deletion{Deleted: 1}) {
+		t.Errorf("delete profile: %+v", del)
+	}
+	del = throne.Deletion{}
+	x = exchange{step: "delete group", method: "DELETE", path: path, body: map[string]any{"timeout": changeWait},
+		view: maskView("deleted")}
+	if err := s.call(t, r, changeLimit, x, &del); err != nil {
+		t.Fatalf("delete group: %v", err)
+	}
+	if del != (throne.Deletion{Deleted: gid}) {
+		t.Errorf("delete group: %+v", del)
+	}
+	err = s.call(t, r, readLimit, exchange{step: "delete group again", method: "DELETE", path: path}, nil)
+	wantCode(t, "delete group again", err, throne.CodeNotFound)
+
+	ctx, cancel = context.WithTimeout(t.Context(), readLimit)
+	groups, err := s.c.Groups(ctx)
+	cancel()
+	if err != nil || slices.ContainsFunc(groups, func(g throne.Group) bool { return g.ID == gid }) {
+		t.Errorf("group %d is still listed (%v)", gid, err)
+	}
+}
+
+func (s *suite) testGeo(t *testing.T, r *recorder) {
+	var got struct {
+		Files []throne.GeoAsset `json:"files"`
+	}
+	s.get(t, r, "geo files", "/v1/geo-assets", nil, &got, nil)
+	if len(got.Files) == 0 {
+		t.Fatal("no geo files")
+	}
+	present := true
+	for _, f := range got.Files {
+		if f.Name == "" || f.URL == "" {
+			t.Errorf("geo file %+v", f)
+		}
+		present = present && f.Present
+	}
+	err := s.call(t, r, readLimit, exchange{step: "unknown file", method: "POST", path: "/v1/geo-assets/update",
+		body: map[string]any{"files": []string{"geocity"}}}, nil)
+	wantCode(t, "unknown file", err, throne.CodeBadRequest)
+	if !present {
+		r.note("update missing", "a geo file is missing, and the suite downloads none")
+		return
+	}
+
+	// With every file present, only_missing downloads nothing.
+	var up throne.GeoUpdate
+	x := exchange{step: "update missing", method: "POST", path: "/v1/geo-assets/update",
+		body: map[string]any{"only_missing": true, "timeout": changeWait}}
+	if err := s.call(t, r, changeLimit, x, &up); err != nil {
+		t.Fatalf("update missing: %v", err)
+	}
+	if len(up.Files) != len(got.Files) {
+		t.Errorf("update missing: %d results for %d files", len(up.Files), len(got.Files))
+	}
+	for _, f := range up.Files {
+		if !f.OK || !f.Skipped {
+			t.Errorf("update missing: %+v, want skipped", f)
+		}
+	}
+}
+
+func (s *suite) testRuleSets(t *testing.T, r *recorder) {
+	s.ensureIdle(t)
+	err := s.call(t, r, readLimit, exchange{step: "update while idle", method: "POST", path: "/v1/rule-sets/update"}, nil)
+	wantCode(t, "update while idle", err, throne.CodeNotRunning)
+
+	s.ensureRunning(t, s.cfg.profile)
+	var up throne.RuleSetUpdate
+	x := exchange{step: "update", method: "POST", path: "/v1/rule-sets/update", body: map[string]any{"timeout": changeWait},
+		view: ruleSetView}
+	if err := s.call(t, r, changeLimit, x, &up); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	t.Logf("rule-sets: state %q, %d updated, %d failed", up.State, up.Updated, len(up.Failures))
+}
+
+func (s *suite) testBackup(t *testing.T, r *recorder) {
+	var b struct {
+		throne.BackupInfo
+		State string `json:"state"`
+	}
+	x := exchange{step: "create", method: "POST", path: "/v1/backups",
+		body: map[string]any{"parts": []string{throne.PartProfiles, throne.PartRoutes}, "timeout": changeWait},
+		view: maskView("id")}
+	err := s.call(t, r, changeLimit, x, &b)
+	s.admin(t, r, err)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := "/v1/backups/" + strconv.Itoa(b.ID)
+	t.Cleanup(func() { s.drop(t, path) })
+	if b.State != "" {
+		t.Fatalf("the backup is still %s after %d seconds", b.State, changeWait)
+	}
+	if b.Size < 8 || len(b.SHA256) != 64 || !slices.Equal(b.Parts, []string{throne.PartProfiles, throne.PartRoutes}) {
+		t.Errorf("backup %+v", b.BackupInfo)
+	}
+
+	// The first 8 bytes are the magic and the format version, which the transcript keeps.
+	var head struct {
+		Data []byte `json:"data"`
+		EOF  bool   `json:"eof"`
+	}
+	x = exchange{step: "read head", method: "GET", path: path, query: map[string]string{"offset": "0", "length": "8"},
+		view: maskView("id")}
+	if err := s.call(t, r, readLimit, x, &head); err != nil {
+		t.Fatalf("read head: %v", err)
+	}
+	if len(head.Data) != 8 || !bytes.HasPrefix(head.Data, []byte("THRN")) || head.EOF {
+		t.Errorf("archive starts with %q, eof %v", head.Data, head.EOF)
+	}
+	err = s.call(t, r, readLimit, exchange{step: "read past the end", method: "GET", path: path,
+		query: map[string]string{"offset": "1099511627776"}}, nil)
+	wantCode(t, "read past the end", err, throne.CodeBadRequest)
+	var del struct {
+		Deleted int `json:"deleted"`
+	}
+	x = exchange{step: "delete", method: "DELETE", path: path, view: maskView("deleted")}
+	if err := s.call(t, r, readLimit, x, &del); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if del.Deleted != b.ID {
+		t.Errorf("deleted %d, want %d", del.Deleted, b.ID)
+	}
+	err = s.call(t, r, readLimit, exchange{step: "read deleted", method: "GET", path: path}, nil)
+	wantCode(t, "read deleted", err, throne.CodeNotFound)
+
+	// A whole archive, through the library, for the restore subtest.
+	file := filepath.Join(s.tmp, "live.thrbackup")
+	f, err := os.Create(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), changeLimit)
+	info, err := s.c.Backup(ctx, f, nil)
+	cancel()
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		t.Fatalf("download a backup: %v", err)
+	}
+	archive, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok := bytes.HasPrefix(archive, []byte("THRN")) && int64(len(archive)) == info.Size
+	r.note("download", map[string]any{"parts": info.Parts, "magic_and_size": ok})
+	if !ok {
+		t.Fatalf("downloaded %d bytes starting %q, want %d starting THRN", len(archive), archive[:min(4, len(archive))], info.Size)
+	}
+	s.archive = file
+}
+
+func (s *suite) testRestore(t *testing.T, r *recorder) {
+	if !s.cfg.destructive {
+		r.skip(t, "THRONE_LIVE_DESTRUCTIVE is not set")
+	}
+	if s.archive == "" {
+		r.skip(t, "the backup subtest made no archive")
+	}
+	archive, err := os.ReadFile(s.archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(archive)
+	var open struct {
+		ID         int `json:"id"`
+		ChunkLimit int `json:"chunk_limit"`
+	}
+	x := exchange{step: "open upload", method: "POST", path: "/v1/restores",
+		body: map[string]any{"size": len(archive), "sha256": hex.EncodeToString(sum[:])}, view: maskView("id")}
+	err = s.call(t, r, readLimit, x, &open)
+	s.admin(t, r, err)
+	if err != nil {
+		t.Fatalf("open upload: %v", err)
+	}
+	path := "/v1/restores/" + strconv.Itoa(open.ID)
+	applied := false
+	t.Cleanup(func() {
+		if !applied {
+			s.drop(t, path)
+		}
+	})
+	err = s.call(t, r, readLimit, exchange{step: "apply incomplete", method: "POST", path: path + "/apply"}, nil)
+	wantCode(t, "apply incomplete", err, throne.CodeIncomplete)
+	var st throne.RestoreUpload
+	s.get(t, r, "status while uploading", path, nil, &st, maskView("id"))
+	if st.State != throne.UploadUploading || st.Received != 0 || st.Archive != nil {
+		t.Errorf("status while uploading: %+v", st)
+	}
+
+	// Only the last chunk is recorded: how many come before it depends on the archive's size.
+	n := open.ChunkLimit
+	if n <= 0 {
+		n = 512 << 10
+	}
+	var up throne.RestoreUpload
+	for offset := 0; offset < len(archive); {
+		end := min(offset+n, len(archive))
+		x := exchange{step: "upload last chunk", method: "PUT", path: path,
+			body:     map[string]any{"offset": offset, "data": archive[offset:end]},
+			bodyView: maskView("offset", "data"), view: maskView("id")}
+		if end < len(archive) {
+			ctx, cancel := context.WithTimeout(t.Context(), readLimit)
+			_, err := send(ctx, s.c, x)
+			cancel()
+			if err != nil {
+				t.Fatalf("upload at %d: %v", offset, err)
+			}
+		} else {
+			x.body["timeout"] = changeWait
+			if err := s.call(t, r, changeLimit, x, &up); err != nil {
+				t.Fatalf("upload last chunk: %v", err)
+			}
+		}
+		offset = end
+	}
+	if up.Archive == nil {
+		t.Fatalf("Throne still checks the archive after %d seconds", changeWait)
+	}
+	st = throne.RestoreUpload{}
+	s.get(t, r, "status when checked", path, nil, &st, maskView("id"))
+	if st.State != throne.UploadComplete || st.Received != int64(len(archive)) || !reflect.DeepEqual(st.Archive, up.Archive) {
+		t.Errorf("status when checked: %+v, want the archive %+v", st, up.Archive)
+	}
+	var want []string
+	for _, p := range up.Archive.Parts {
+		if p != throne.PartSettings && p != throne.PartIcons {
+			want = append(want, p)
+		}
+	}
+	err = s.call(t, r, readLimit, exchange{step: "apply an unknown part", method: "POST", path: path + "/apply",
+		body: map[string]any{"parts": []string{"no_such_part"}}}, nil)
+	wantCode(t, "apply an unknown part", err, throne.CodeBadRequest)
+
+	s.mustSettle(t)
+	sess := s.watch(t)
+	var res throne.RestoreResult
+	x = exchange{step: "apply", method: "POST", path: path + "/apply", body: map[string]any{"timeout": changeWait}}
+	if err := s.call(t, r, changeLimit, x, &res); err != nil {
+		if throne.ErrorCode(err) == throne.CodeInvalidArchive {
+			r.skip(t, "Throne restores this archive only in its window: "+err.Error())
+		}
+		t.Fatalf("apply: %v", err)
+	}
+	applied = true
+	if !res.Restarting || !slices.Equal(res.Restored, want) {
+		t.Errorf("apply: %+v, want %v restored and a restart", res, want)
+	}
+	s.awaitExit(t, sess)
+	s.awaitBack(t, false)
+	r.note("back after the restart", true)
+}
+
+func (s *suite) testRestart(t *testing.T, r *recorder) {
+	if !s.cfg.destructive {
+		r.skip(t, "THRONE_LIVE_DESTRUCTIVE is not set")
+	}
+	id := s.cfg.profile
+	s.ensureRunning(t, id)
+	sess := s.watch(t)
+	var res struct {
+		Restarting bool `json:"restarting"`
+		Resume     bool `json:"resume"`
+	}
+	err := s.call(t, r, readLimit, exchange{step: "restart", method: "POST", path: "/v1/restart"}, &res)
+	s.admin(t, r, err)
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	if !res.Restarting {
+		t.Errorf("restart: %+v", res)
+	}
+	s.awaitExit(t, sess)
+	s.awaitBack(t, res.Resume)
+	r.note("back after the restart", true)
+
+	var now throne.Status
+	s.get(t, r, "status", "/v1/status", nil, &now, nil)
+	if res.Resume {
+		wantRunning(t, &now, id)
+	} else {
+		wantIdle(t, &now)
+	}
+}
+
+func (s *suite) testShutdown(t *testing.T, r *recorder) {
+	if !s.cfg.destructive {
+		r.skip(t, "THRONE_LIVE_DESTRUCTIVE is not set")
+	}
+	// Throne is gone afterwards, so the state found at the start goes back first.
+	s.restore(t)
+	sess := s.watch(t)
+	var res struct {
+		Stopping bool `json:"stopping"`
+	}
+	err := s.call(t, r, readLimit, exchange{step: "shutdown", method: "POST", path: "/v1/shutdown"}, &res)
+	s.admin(t, r, err)
+	if err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	s.exited = true
+	if !res.Stopping {
+		t.Errorf("shutdown: %+v", res)
+	}
+	s.awaitExit(t, sess)
+	ctx, cancel := context.WithTimeout(t.Context(), readLimit)
+	defer cancel()
+	_, err = s.c.Status(ctx)
+	gone := err != nil && throne.ErrorCode(err) == ""
+	r.note("gone", gone)
+	if !gone {
+		t.Errorf("Throne still answers after the shutdown: %v", err)
+	}
+}
+
 // restore puts back the connection, modes and route found at the start, best effort.
 func (s *suite) restore(t *testing.T) {
+	if s.exited {
+		t.Log("restore: Throne was shut down; start it again")
+		return
+	}
 	within := func(d time.Duration, f func(ctx context.Context) error) error {
 		ctx, cancel := context.WithTimeout(context.Background(), d)
 		defer cancel()

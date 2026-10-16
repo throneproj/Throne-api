@@ -1,8 +1,13 @@
 // Package throne is a client for the Throne API, which lets scripts on the same machine
-// or the LAN control the Throne proxy client.
+// or the LAN control and manage the Throne proxy client.
 //
 // The requests are specified in spec/api.md and the wire protocol in spec/protocol.md
 // of this repository.
+//
+// Admin requests, which import, delete, change settings, back up, restore, restart and
+// shut down, are answered only from Throne's own device, unless Throne allows management
+// from the local network; from elsewhere they fail with CodeForbidden. Their
+// documentation says that they are admin requests.
 package throne
 
 import (

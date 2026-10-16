@@ -7,8 +7,12 @@ change, on the same machine, and diff the two transcript directories.
 It builds only with the `live` tag, so `go test ./...` never touches a real Throne.
 
 > The suite starts and stops connections, switches the routing profile and, when asked,
-> Tun, the system proxy and the core process. It restores the connection, modes and route
-> it found when it ends, best effort. Do not run it where a dropped connection matters.
+> Tun, the system proxy and the core process. It changes the URL test address and puts it
+> back, adds a group named `throne-live scratch` with two profiles and deletes it again, and
+> builds backups. With `THRONE_LIVE_DESTRUCTIVE=1` it also restores a backup it just made,
+> restarts Throne, and at the end shuts Throne down. It restores the connection, modes and
+> route it found when it ends, best effort. Do not run it where a dropped connection
+> matters.
 
 ## Subtests
 
@@ -25,10 +29,22 @@ It builds only with the `live` tag, so `go test ./...` never touches a real Thro
 | 09 | `cancel` | Latency test of `PROFILE`'s group, cancelled; ends `cancelled` or `done` |
 | 10 | `modes` | An unchanged `PUT /v1/modes`; with the opt-ins, each mode toggled and back while running |
 | 11 | `core-kill` | Kill ThroneCore; the core comes back and a reconnect works |
+| 12 | `capabilities` | `capabilities`, `restart_needed` and `degraded` in the status: `null` once settled, unless the kill switch failed |
+| 13 | `settings` | `GET /v1/settings`; `test_url` changed, set to the same value (nothing changed), refused changes (one bad value among good ones, a bad URL, an unknown setting) that change nothing, and put back |
+| 14 | `scratch-group` | Add a plain group, import two `socks5://` links into it, an import of nothing (`nothing_imported`), delete one profile, delete the group, delete it again (`not_found`) |
+| 15 | `geo` | The geo files; an unknown file (`bad_request`); with every file present, an update of the missing ones, which skips them all |
+| 16 | `rule-sets` | Update while idle (`not_running`), then with `PROFILE` running |
+| 17 | `backup` | Build a backup of profiles and routes, read its first 8 bytes (`THRN` and the format version), read past its end (`bad_request`), delete it, read it again (`not_found`); then download a whole backup with the library and check its magic and size |
+| 18 | `restore` | Upload the archive of `backup`, apply it while incomplete (`incomplete`), read the upload's state while uploading and once checked, apply it with an unknown part (`bad_request`), then with the default parts; Throne restarts and comes back. Skipped when Throne answers `invalid_archive`: its profiles include ones, such as Extra Core profiles, that it restores only in its window |
+| 19 | `restart` | `POST /v1/restart` with `PROFILE` running; Throne comes back running it if it said it would resume, else idle |
+| 20 | `shutdown` | Restore the starting state, then `POST /v1/shutdown`; Throne exits |
 
 Subtests without their settings are skipped, and their transcript says so. Each subtest
 sets up its own starting state (idle, or a given profile running) without recording it,
-so one failing subtest does not change the transcripts of the next.
+so one failing subtest does not change the transcripts of the next. Throne answers admin
+requests only on its own device unless it allows management from the local network;
+elsewhere `settings`, `scratch-group`, `backup`, `restore`, `restart` and `shutdown`
+record `forbidden` and are skipped.
 
 ## Running
 
@@ -46,6 +62,7 @@ transcript records it.
 | `THRONE_LIVE_SYSTEM_PROXY=1` | Toggle the system proxy |
 | `THRONE_LIVE_ALLOW_TUN=1` | Toggle Tun. Without privileges, `needs_privileges` is recorded and the toggle ends |
 | `THRONE_LIVE_KILL_CORE=1` | Kill the core: `taskkill /F /IM ThroneCore.exe` on Windows, `pkill -9 -x ThroneCore` elsewhere. The test must be allowed to kill it (a root-owned core needs a root shell). Throne gives up restarting the core when it exits twice within 10 seconds, so leave at least 10 seconds between two kills |
+| `THRONE_LIVE_DESTRUCTIVE=1` | Run `restore`, `restart` and `shutdown`. The restore replaces Throne's profiles, routes, OTP accounts and IP lists with the archive made minutes before, and Throne restarts twice. After `shutdown` Throne is gone: start it again yourself |
 
 ```sh
 export THRONE_ADDR=127.0.0.1:9095 THRONE_KEY_FILE=~/.config/throne/api-key
@@ -77,8 +94,13 @@ the core differ between platforms.
 
 Transcripts hold each request and its response with run-dependent values masked as
 `"<masked>"`, keeping the key: timestamps, latencies, speeds, byte counters, country and
-exit IP, job IDs (also in paths, as `/v1/tests/{job}`), group sizes and update times, and
-Throne's version. Error responses keep the status and code, not the translated message.
+exit IP, job IDs (also in paths, as `/v1/tests/{job}`), group sizes and update times,
+Throne's version, the sizes and SHA-256 of archives and geo files, and why a rule-set
+failed to download. The IDs of the scratch group, its profiles, backups and uploads are
+masked too, in paths as `/v1/groups/{group}`, `/v1/backups/{backup}` and
+`/v1/restores/{upload}`. Error responses keep the status and code, not the translated
+message.
 Outcomes that depend on timing are recorded as checks rather than responses: which of the
 concurrent restarts won, whether a cancel arrived before the test finished, and whether a
-poll saw the core down. Polls are not recorded, only the state they waited for.
+poll saw the core down. Polls are not recorded, only the state they waited for, and of an
+upload only the last chunk is.
