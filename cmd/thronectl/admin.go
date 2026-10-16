@@ -31,6 +31,9 @@ var backupParts = []string{
 	throne.PartProfiles, throne.PartRoutes, throne.PartSettings, throne.PartOTP, throne.PartIPLists, throne.PartIcons,
 }
 
+// geoFiles are the files geo update takes.
+var geoFiles = []string{"geoip", "geosite"}
+
 // restoreDefault are the parts backup restore restores without --parts, those the archive
 // holds.
 var restoreDefault = []string{throne.PartProfiles, throne.PartRoutes, throne.PartOTP, throne.PartIPLists}
@@ -616,7 +619,7 @@ func cmdGeo(c *cli, fs *flag.FlagSet, args []string) error {
 	}
 	var files []string
 	for _, f := range pos[1:] {
-		if f != "geoip" && f != "geosite" {
+		if !slices.Contains(geoFiles, f) {
 			return c.usageErr("want geoip or geosite, not %q", f)
 		}
 		if !slices.Contains(files, f) {

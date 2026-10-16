@@ -196,6 +196,9 @@ func TestUsageErrors(t *testing.T) {
 		{"restart", "now"},
 		{"shutdown"},
 		{"keygen", "x"},
+		{"completion"},
+		{"completion", "tcsh"},
+		{"completion", "bash", "zsh"},
 	} {
 		code, stdout, stderr := runCLI(t, env, args...)
 		if code != 2 || stderr == "" || stdout != "" {

@@ -38,6 +38,12 @@ func (cmd *command) synopsis() string {
 	return strings.TrimSpace("thronectl " + cmd.name + " " + cmd.args)
 }
 
+// summary is the first sentence of the help, without its period.
+func (cmd *command) summary() string {
+	first, _, _ := strings.Cut(cmd.help, ". ")
+	return strings.TrimSuffix(first, ".")
+}
+
 var commands []*command
 
 func init() {
@@ -85,6 +91,22 @@ func init() {
 		{"keygen", "[-o FILE]", "Generate a new Throne API key. It does not connect to Throne.", cmdKeygen},
 		{"call", "<METHOD> <PATH> [key=value ...] [--body JSON]",
 			"Send any request and print the response body.", cmdCall},
+		{"completion", "bash | zsh | fish | powershell",
+			"Print a shell completion script. It completes commands, flags and arguments, and the IDs of profiles, " +
+				"groups, routing profiles and tests when Throne answers within a second, at the address and with " +
+				"the key that other commands use. To load it:\n\n" +
+				"  bash        add this line to ~/.bashrc, or to ~/.bash_profile on macOS:\n" +
+				"                eval \"$(thronectl completion bash)\"\n" +
+				"              or save the script as thronectl in bash-completion's directory, such as\n" +
+				"              ~/.local/share/bash-completion/completions\n" +
+				"  zsh         add these lines to ~/.zshrc:\n" +
+				"                autoload -Uz compinit && compinit\n" +
+				"                source <(thronectl completion zsh)\n" +
+				"              or save the script as _thronectl in a directory that ~/.zshrc adds to $fpath\n" +
+				"              before it runs compinit\n" +
+				"  fish        save the script as ~/.config/fish/completions/thronectl.fish\n" +
+				"  powershell  add this line to $PROFILE:\n" +
+				"                thronectl completion powershell | Out-String | Invoke-Expression", cmdCompletion},
 		{"version", "", "Print the version.", cmdVersion},
 	}
 }
@@ -115,6 +137,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 			c.cancel()
 		}
 	}()
+	if len(args) > 0 && args[0] == completeCommand {
+		c.completeWords(args[1:])
+		return 0
+	}
 	return c.exit(c.main(args))
 }
 
@@ -191,8 +217,7 @@ Usage: thronectl [flags] <command> [arguments]
 Commands:
 `)
 	for _, cmd := range commands {
-		first, _, _ := strings.Cut(cmd.help, ". ")
-		fmt.Fprintf(w, "  %-11s %s.\n", cmd.name, strings.TrimSuffix(first, "."))
+		fmt.Fprintf(w, "  %-11s %s.\n", cmd.name, cmd.summary())
 	}
 	fmt.Fprint(w, `
 The key comes from THRONE_KEY, the file THRONE_KEY_FILE names, or --key-file. In Throne,

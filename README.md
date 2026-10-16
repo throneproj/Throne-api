@@ -81,6 +81,7 @@ Flags work before or after the command.
 | `restart`, `shutdown [--yes]` | Restart Throne; make it exit, after asking |
 | `keygen [-o FILE]` | Generate a new key: print it, or write it to a new file that only you can read |
 | `call <METHOD> <PATH> [key=value ...] [--body JSON]` | Send any request from [api.md](spec/api.md) and print the response body |
+| `completion bash \| zsh \| fish \| powershell` | Print a [shell completion](#shell-completion) script |
 | `version` | Print thronectl's version |
 
 `thronectl help <command>` describes a command. `--name` is a case-insensitive regular
@@ -160,6 +161,40 @@ thronectl connect best --max-age 10m
 
 Tools that start programs from a hotkey often do not see your shell's environment; set
 `THRONE_KEY_FILE` as a user environment variable, or pass `--key-file`.
+
+### Shell completion
+
+`thronectl completion <shell>` prints a script that completes commands, flags, subcommands,
+settings, backup parts and the other fixed values in bash, zsh, fish and PowerShell. When
+Throne answers within a second, it also completes the IDs of profiles, groups, routing
+profiles and tests, with their names. It reaches Throne as the other commands do: through
+`THRONE_ADDR` and the key, or `--addr` and `--key-file` on the line.
+
+```sh
+# bash: in ~/.bashrc (on macOS, ~/.bash_profile)
+eval "$(thronectl completion bash)"
+# zsh: in ~/.zshrc
+autoload -Uz compinit && compinit
+source <(thronectl completion zsh)
+# fish
+thronectl completion fish > ~/.config/fish/completions/thronectl.fish
+```
+
+```powershell
+# In $PROFILE
+thronectl completion powershell | Out-String | Invoke-Expression
+```
+
+bash can also load the script from bash-completion's directory: save it as
+`~/.local/share/bash-completion/completions/thronectl`. zsh can load it from `$fpath`:
+
+```sh
+mkdir -p ~/.zfunc && thronectl completion zsh > ~/.zfunc/_thronectl
+# and in ~/.zshrc, before compinit:
+fpath=(~/.zfunc $fpath)
+```
+
+The scripts ask thronectl what completes, so they keep up with new versions of it.
 
 ## Go library
 
