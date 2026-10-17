@@ -284,6 +284,30 @@ func TestStatusTunCapability(t *testing.T) {
 	}
 }
 
+func TestStatusTunConflict(t *testing.T) {
+	f, env := startFake(t)
+	const reason = "A background Throne (PID 4242) owns Tun on this computer; stop it or use thronectl."
+	for _, conflict := range []string{`"` + reason + `"`, "null", ""} {
+		field := ""
+		if conflict != "" {
+			field = `"tun_conflict":` + conflict + `,`
+		}
+		f.on("GET /v1/status", ok(`{"state":"idle","profile":null,"last_profile_id":-1,"tun":false,`+field+
+			`"capabilities":{"tun":true,"kill_switch":false,"headless":false},"restart_needed":false}`))
+		code, stdout, stderr := runCLI(t, env, "status")
+		if code != 0 {
+			t.Fatalf("tun_conflict %s: exit %d, stderr %q", conflict, code, stderr)
+		}
+		want := conflict != "" && conflict != "null"
+		if got := strings.Contains(stdout, "Tun:             off\nTun conflict:    "+reason+"\n"); got != want {
+			t.Errorf("tun_conflict %s: row shown %v, want %v:\n%s", conflict, got, want, stdout)
+		}
+		if !want && strings.Contains(stdout, "Tun conflict") {
+			t.Errorf("tun_conflict %s: unexpected row:\n%s", conflict, stdout)
+		}
+	}
+}
+
 func TestConnect(t *testing.T) {
 	f, env := startFake(t)
 	tests := []struct {

@@ -78,8 +78,308 @@ client it lets in.
 
 Throne answers admin requests only from its own device, that is from a loopback address
 such as `127.0.0.1` or `::1`. With **Allow management from the local network** on, in the
-Throne API settings in Throne, it answers them from every client it lets in. Otherwise an
-admin request gets 403 `forbidden`. The key is the same for both kinds.
+Throne API settings in Throne, it answers them from every client it lets in; in
+[headless Throne](#headless-throne), `--api-admin-lan` or `THRONE_API_ADMIN_LAN=1` does the
+same. Otherwise an admin request gets 403 `forbidden`. The key is the same for both kinds.
+
+After 5 connections from one address fail authentication within a minute, as those of a
+client that still has an old key do, Throne refuses every connection from that address for
+60 seconds: it closes them without a response. That locks out every other client at the
+address too, such as those behind one NAT or those that reach a container through its
+published port. Throne does not refuse an address where a client authenticated in the last
+10 minutes, and it never refuses loopback addresses.
+
+## Headless Throne
+
+`Throne --headless` runs Throne without a window, as a service or in a container, and
+`capabilities.headless` in the [Status](#status) is true. The API is how it is controlled,
+so it is on from the start:
+
+- Throne listens on `127.0.0.1:9095`, with the key in `config/api.key` in its data
+  directory. Throne creates that file on its first start, readable only by the user it runs
+  as, and never replaces a key in it. Only a file that holds no key at all, as after a first
+  start that was cut short, gets a new key, which Throne logs. Any other unusable file keeps
+  the API off, and Throne logs why: delete it to have a new key created at the next start.
+  To change the key, stop Throne, delete the file, write a new one with
+  `thronectl keygen -o <file>` and start Throne again, then give every client the new key
+  (see [Scope](#scope) for what a client with the old one does).
+- The data directory is the first of `--data-dir`, `THRONE_DATA_DIR` and systemd's
+  `STATE_DIRECTORY` that is set. Without them it is `/var/lib/throne` for root on Linux,
+  `/Library/Application Support/Throne` for root on macOS, `%ProgramData%\Throne` for a
+  Windows service (`--service`) or a Throne that runs as LocalSystem, which Throne keeps
+  for SYSTEM and Administrators only, and the user's configuration directory otherwise,
+  such as `~/.config/Throne` on Linux or `%LOCALAPPDATA%\Throne` on Windows.
+- When the settings of the data directory turn the API on, as a Throne with a window that
+  uses the same directory may have done, Throne listens as they say, with their key.
+- These flags, or the environment variables beside them, change the listener. A flag wins
+  over its variable, and both win over the settings:
+
+| Flag | Variable | |
+|---|---|---|
+| `--api-listen ADDRESS` | `THRONE_API_LISTEN` | `PORT` (on `127.0.0.1`), `IP:PORT`, `[IPv6]:PORT`, `*:PORT` (every address), or `off` |
+| `--api-key-file FILE` | `THRONE_API_KEY_FILE` | Read the key from this file. Throne does not start when the file is missing or holds no valid key: write one with `thronectl keygen -o FILE` |
+| `--api-admin-lan` | `THRONE_API_ADMIN_LAN=1` | Answer [admin requests](#scope) from the local network too |
+| `--api-allow LIST` | `THRONE_API_ALLOW` | Let in only these IP addresses and subnets, such as `192.168.1.0/24`, separated by commas or spaces. Without it, a listener on a network address lets in every device that holds the key |
+
+A variable set to an empty value counts as not set, except `THRONE_API_ALLOW`. An empty
+list, or one of only commas and spaces, from `--api-allow` or `THRONE_API_ALLOW`, makes
+Throne exit with status 64 rather than let in every device, and so does an entry that is
+not an IP address or subnet. A compose file's `THRONE_API_ALLOW: ${VAR}` passes an empty
+value when `VAR` is not set: leave `THRONE_API_ALLOW` out of the environment to let in
+every device.
+
+When the listener that `--api-listen` or `THRONE_API_LISTEN` names cannot listen, Throne
+exits with status 78, or with status 1 when its address has not appeared after 30 seconds.
+When the default listener, or one that the settings turn on, cannot listen, as when another
+program holds its port, Throne runs on without the API (`degraded` is `api_unavailable`) and
+tries again every 30 seconds. If the Throne API of another Throne answers on that port,
+Throne logs so and stops trying: give one of them another port with `--api-listen`. A
+listener on one address, not `*`, stays on it: when the address leaves every network
+interface, no client reaches the API until it comes back, and `api` in `--health` is
+`address_missing` meanwhile. To keep the API through a change of address, listen on
+`*:PORT` with `--api-allow`.
+
+`Throne --print-connection`, run as the user Throne runs as and for the same data directory,
+prints the two settings that clients read, never the key itself, as `export` commands for
+`eval "$(Throne --print-connection)"` in a POSIX shell. A value that the shell would split
+or expand is in single quotes:
+
+```sh
+$ sudo Throne --print-connection
+export THRONE_ADDR=127.0.0.1:9095
+export THRONE_KEY_FILE=/var/lib/throne/config/api.key
+```
+
+It exits with status 2 when the API is off or failed to listen, as when another program
+holds its address or its key is missing or invalid, or when its key is in the settings
+rather than in a file. `eval` does not pass that status on, so a script that checks it runs
+`conn="$(Throne --print-connection)" && eval "$conn"`. `sudo` drops these variables from the
+environment, so a client run with `sudo` takes the key file as an option, such as
+`sudo thronectl --key-file /var/lib/throne/config/api.key status`.
+
+`Throne --health`, run the same way, prints one line of JSON about the running Throne. It
+exits with status 0 when `ok` is true, 1 when it is not or Throne is still starting, and 2
+when no Throne answers:
+
+```sh
+$ sudo Throne --health
+{"api":"listening","core_restarts":0,"degraded":null,"headless_dialogs":0,"ok":true,"previous_crash":false,"ready":true,"state":"running","stuck_s":0}
+```
+
+| Field | |
+|---|---|
+| `ok` | Throne works: it has started, its core is up, no profile is stuck starting or stopping, and the kill switch is off or works. What a restart of Throne cannot fix leaves it true: a [kill switch](#kill-switch) that cannot work as set up or that `--no-kill-switch` turned off, and the reasons in `degraded` after `kill_switch_failed`. So it suits a readiness check; restarting Throne whenever it is false can restart it forever |
+| `ready` | Throne has finished starting |
+| `state`, `degraded` | As in the [Status](#status); `state` is `starting` until Throne has started |
+| `stuck_s` | Seconds a profile has been starting or stopping for longer than it should, else `0` |
+| `core_restarts` | How often the core process was restarted |
+| `headless_dialogs` | Questions Throne skipped because it has no window. It should stay `0`; the log names them |
+| `previous_crash` | The previous run of Throne did not end cleanly |
+| `api` | The Throne API's listener: `off`, `listening`, `key_invalid` (its key is missing or invalid), `failed` (it could not listen, as when another program holds its port), `retrying` (its address has not appeared yet, and Throne waits up to 30 seconds for it) or `address_missing` (its address has left every network interface, so no client reaches the API until it comes back) |
+
+They ask the running Throne through a socket that only the user Throne runs as can open:
+`config/.instance` in the data directory. When that path is too long for a socket (100
+bytes or more), or the data directory cannot hold one, as on FAT, exFAT or sshfs, the
+socket is `headless-<hash>` in a directory of that user's own: `/run/throne` for root on
+Linux, `/var/run/throne` for root on macOS, and `/tmp/throne-<uid>` otherwise. On Windows
+it is a named pipe; that of a service (`--service`, or Throne run as LocalSystem) answers
+Administrators and SYSTEM, so the client modes run from an elevated prompt there.
+
+`Throne --check`, run the same way and with the flags and variables Throne starts with,
+tells whether headless Throne can run here as it is set up, before its first start or when
+something does not work. It changes nothing: it creates no file or directory, takes no
+lock, opens the database read-only and starts nothing but the core's own check, so it can
+run beside a running Throne. It prints one line per item, `[ OK ]`, `[WARN]`, `[FAIL]` or
+`[INFO]`, with an indented `fix:` line below it where there is a fix, and exits with status 0
+when no line is `[FAIL]` and 1 otherwise:
+
+| Item | |
+|---|---|
+| build | Throne's version, Qt, the system and the user Throne runs as |
+| data directory | Which one and why, as the list above picks it, and whether Throne can write it and only its user can read it. A directory that does not exist yet is `[INFO]`: Throne creates it at its first start |
+| instance | Whether a Throne runs for this data directory, and its PID |
+| settings | Read from `config/throne.db`; Throne's defaults when there is none yet |
+| API | Where the API listens, from the settings, flags and variables |
+| TLS | Whether Throne can make TLS connections, which subscriptions and downloads need |
+| core | Whether `ThroneCore` is there and runs, and what it reports about its privileges |
+| Tun | Whether the core can run Tun: on Linux root or the capabilities Tun needs, CAP_NET_ADMIN and `/dev/net/tun`; on macOS a core that runs as root. `[WARN]` with how to grant it, such as `setcap` for the core, or `--cap-add NET_ADMIN --device /dev/net/tun` for a container |
+| kill switch | Whether the core can run the [kill switch](#kill-switch): root, and nftables on Linux. `[WARN]` otherwise |
+| ports | Whether the ports Throne listens on are free: the API, the mixed inbound unless its port is random or it is off, the DNS port (`dns_in_port`), and the Clash API (`clash_api_port`) and the sing-box API (`singbox_api_port`) when they are on. Ports that the running Throne of this data directory holds are `[ OK ]`. The `fix:` lines name the [setting](#settings) to change, such as `thronectl settings set dns_in_port=PORT` |
+| host | Another headless Throne on this computer, and whether something else holds Tun here (see [One Tun per computer](#one-tun-per-computer)). The Tun of the running Throne of this data directory is `[INFO]`, also when its profile runs Tun after Tun mode was turned off or comes from a custom configuration |
+| supervisor | Whether systemd started Throne, with a notify socket and a watchdog, and what `--restart-mode auto` does then (see [systemd](#systemd)); on Windows, what a restart does under the service control manager (`--service`) and outside it |
+| device ID | On Linux, where the device ID that Throne can send with subscription requests comes from: `/etc/machine-id`, or on a system without one, such as a container, `config/hwid`, which Throne creates at its first start |
+
+Only what keeps Throne from working at all is `[FAIL]`: an unusable data directory, no TLS, a
+core that is missing or does not run, or a port that another program holds. Without the
+privileges for Tun or the kill switch the lines are `[WARN]`, so a Throne that only serves its
+proxy inbound passes.
+
+Headless Throne asks nothing. What a Throne with a window asks in a dialog, it decides on
+its own or writes to its log:
+
+- Until it has started, every request gets 503 `starting`; try again a moment later.
+- It never sets the system proxy: `PUT /v1/modes` with `"system_proxy": true` gets 409
+  `system_proxy_unsupported`.
+- It cannot ask for the privileges Tun needs, so turning Tun on gets `needs_privileges`
+  unless it runs with them, as root for example. On Linux and macOS that is also the answer
+  while Throne does not know yet whether it has them (`capabilities.tun` is `null`).
+  `Throne --check` names what Tun lacks and how to grant it. One Throne at a time can run
+  Tun on a computer: see [One Tun per computer](#one-tun-per-computer).
+- When it starts, it starts the profile that ran when it last stopped, whatever
+  `remember_enable` says, unless it was started with `--no-resume` or `THRONE_RESUME=0`.
+  Tun mode comes back as it was. If Tun cannot come back, Throne does not start the profile
+  without it: `degraded` is `tun_unavailable`.
+- When `kill_switch` is on, the [kill switch](#kill-switch) comes back at every start,
+  unless Throne was started with `--no-kill-switch` or `THRONE_KILL_SWITCH=0`. Then it
+  stays off for that run and fails closed with the code `overridden`: `degraded` is
+  `kill_switch_failed`, and profiles are refused with `kill_switch_inactive` until
+  `kill_switch` is turned off. The setting stays as it was saved.
+- [`POST /v1/restart`](#post-v1restart) and the restart after a
+  [restore](#post-v1restoresidapply) make it exit with status 75, for its service manager
+  to start it again, or start it again on its own (in the same process; on Windows as a
+  new process), as `--restart-mode` says.
+  [`POST /v1/shutdown`](#post-v1shutdown) makes it exit with status 0. Either way the
+  connection drops: until Throne listens again, connections fail, and then requests get
+  `starting` until it has started.
+
+Besides `core_unavailable` and `kill_switch_failed`, headless Throne reports more reasons
+in `degraded`. Throne reports the first that applies, in this order; a client should take
+a value it does not know as degraded too:
+
+| `degraded` | |
+|---|---|
+| `core_gave_up` | The core process kept failing and Throne gave up on it. Throne exits with status 70, for its service manager to start it again. When none of the three starts of Throne before this one had a core that stayed up for a minute, Throne stays up instead, so the API stays reachable, and tries the core again every 5 minutes |
+| `core_unavailable` | The core process is not up |
+| `kill_switch_failed` | The kill switch is on and failed; see [Kill switch](#kill-switch) |
+| `api_unavailable` | The Throne API is on but does not listen, as when another program holds its port or its key is unusable. A client cannot reach the API to see this: `Throne --health` reports it, with the listener's state in `api`. `ok` stays true |
+| `tun_unavailable` | Tun mode was on when Throne last stopped, and Throne cannot turn it on now, since it lacks the privileges Tun needs or cannot tell whether it has them, or something else on this computer holds Tun (`tun_conflict` in the Status says what). It did not start the profile without Tun. `PUT /v1/modes` with `"tun": false` turns Tun mode off and clears this; then start the profile with `PUT /v1/connection` |
+| `resume_suppressed` | Throne did not start the profile it would resume, because each of the last three times it did, Throne or its core stopped unexpectedly within a minute. Start the profile through the API: once it has run for a minute, this clears |
+| `vpn_auth_failed` | The server of a VPN profile, such as OpenVPN or OpenConnect, rejected its credentials, and Throne cannot ask for others. It clears when the profile stops |
+| `vpn_challenge_pending` | The server of a VPN profile asks for an answer, such as a one-time code, that Throne cannot give on its own. Throne cancels the question when it expires, after 5 minutes at most |
+
+### One Tun per computer
+
+Tun's interface, Throne's DNS port and the routes that Tun sets belong to the whole
+computer, so one Throne at a time can run Tun on it. Headless Throne turns Tun on only when
+nothing else holds them: no `throne-tun` interface of another Throne (Linux and Windows), no
+interface that holds the address of its Tun (`tun_ipv4_cidr`), and, while no profile
+runs, its DNS port (`dns_in_port`, `5533` by default) free on `127.0.0.1`. Otherwise
+`PUT /v1/modes` with `"tun": true` gets 409 `tun_conflict`, whose message says what holds
+Tun, `tun_conflict` in the [Status](#status) says the same, and Tun mode that cannot come
+back at the start leaves `degraded` at `tun_unavailable`. When a network of the computer,
+such as a Docker bridge, uses the address of the Tun, give Tun a range that no network
+there uses, such as with `thronectl settings set tun_ipv4_cidr=172.29.0.1/24`; when another
+program holds the DNS port, give Throne another one with `dns_in_port`.
+
+Headless Throne also marks that it runs, for the other Thrones of the computer: on Linux
+and macOS in `/run/throne` (`/var/run/throne` on macOS) when it runs as root, else in
+`$XDG_RUNTIME_DIR/throne`; on Windows as the named mapping `Global\ThroneHeadless`, or
+`Local\ThroneHeadless` when it is not elevated and does not run as a service. A Throne with
+a window sees a headless Throne that runs as root or as its own user (on Windows: one in
+`Global\`, or one in `Local\` in its own Windows session). When it starts while one runs,
+it warns in its log and in a notice, and as long as one runs, whether that one uses Tun or
+not, it refuses Tun with the same `tun_conflict`: stop the headless Throne, or control it
+with thronectl. It also does not update itself while the headless Throne runs from the same
+installation. A second headless Throne, with another data directory, still runs, and the
+interface and port checks above keep the two from running Tun at once.
+
+### Exit statuses
+
+| Status | |
+|---|---|
+| `0` | Stopped: SIGTERM, SIGINT or [`POST /v1/shutdown`](#post-v1shutdown); on Windows also a service stop, Ctrl+C, closing the console, signing out or `taskkill` without `/F` |
+| `1` | Throne could not start, for a reason that may pass: the lock or the instance socket of its data directory, a database error, its core's IPC listener, or an `--api-listen` address that did not appear within 30 seconds |
+| `3` | Another Throne uses the data directory |
+| `64` | A bad option, option value or environment variable |
+| `70` | The core kept failing and Throne gave up on it, or the core has not been usable for 60 seconds (see [Watchdog](#watchdog)); not after three starts in a row without a working core (see `core_gave_up` above) |
+| `71` | A profile has been starting for 180 seconds, or stopping for 90 (see [Watchdog](#watchdog)); not after three starts in a row without a working core |
+| `75` | A restart that Throne leaves to its service manager: [`POST /v1/restart`](#post-v1restart), a [restore](#post-v1restoresidapply) or SIGHUP, as `--restart-mode` says |
+| `78` | A configuration that a restart cannot fix: the data directory, the file `--api-key-file` names, the `--api-listen` address, or an unusable database file. For the database, the log says what to do: move a damaged `config/throne.db` aside together with its `-wal` and `-shm` files, or put back a copy of them; when they are read-only, make them writable by the user Throne runs as |
+
+A service manager should start Throne again after 1, 70, 71 and 75, and not after 64 or 78,
+which need a change first. `Throne --check` exits with 0 or 1 as described above, and with
+64 for a bad option.
+
+### Watchdog
+
+Headless Throne watches its own progress, with or without a service manager:
+
+- When a profile has been starting for 180 seconds, or stopping for 90, Throne exits with
+  status 71.
+- When its core has not been usable for 60 seconds, as when it hangs or stops answering
+  Throne, while Throne has not given up on it, Throne exits with status 70. One restart of
+  the core after a crash takes less than that.
+
+Throne logs `EXIT <status>: <reason>` before it exits, and its service manager starts it
+again. A profile that Throne was resuming then counts as one that stopped early, so after
+three such starts in a row it is not resumed (`resume_suppressed`). After three starts in a
+row without a working core, Throne does not exit: it logs
+`[Watchdog] <reason>; staying up (stay-up mode), resetting the core` once and restarts its
+core instead, so the API stays reachable.
+
+### systemd
+
+Run headless Throne as a `Type=notify` service. Throne then tells systemd how it is doing,
+from its main process, as the default `NotifyAccess=main` expects:
+
+- `READY=1` once it has started, as `ready` in `Throne --health` says, and also when it
+  stays up after three starts in a row without a working core. Until then it extends the
+  start timeout by 60 seconds every 20 seconds, and by 120 seconds before it opens its
+  database, which can take a while after an update. So `TimeoutStartSec` ends only a start
+  that hangs.
+- `STATUS=`, the line `systemctl status` shows: `Starting`, `Starting core`,
+  `Core restarting 2/5`, `Idle`, `Connecting <profile>`, `Connected <profile>`, with
+  ` (Tun)` in Tun mode, `Stopping <profile>`, `Degraded: <reason>` with a `degraded`
+  value, and `Stopping` while Throne exits.
+- `STOPPING=1` when it begins to exit, whatever the reason.
+- `WATCHDOG=1` with `WatchdogSec` set: every third of it, but at most once a second, as long
+  as Throne's main loop runs. When the loop hangs and `WatchdogSec` passes without one,
+  systemd kills Throne with SIGABRT, and `Restart=on-failure` starts it again.
+
+Throne does not pass systemd's variables, such as `NOTIFY_SOCKET` and
+`CREDENTIALS_DIRECTORY`, or the `THRONE_` variables it reads, such as `THRONE_API_KEY_FILE`,
+on to its core and the programs the core starts. A unit such as:
+
+```ini
+[Unit]
+Description=Throne
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/opt/throne/Throne --headless
+StateDirectory=throne
+WatchdogSec=60
+Restart=on-failure
+RestartPreventExitStatus=64 78
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
+```
+
+keeps its data in `/var/lib/throne` (`StateDirectory`). `KillMode=mixed` sends SIGTERM to
+Throne alone, so Throne stops its core and the kill switch itself, in order; systemd kills
+what is left once Throne has exited, or when `TimeoutStopSec` passes. Under systemd,
+`--restart-mode auto` exits with status 75 for a restart, and `Restart=on-failure` starts
+Throne again.
+
+### Recovery
+
+If saved settings keep Throne unreachable, such as a kill switch or Tun, start it once with
+`--no-resume --no-kill-switch`, or with `THRONE_RESUME=0` and `THRONE_KILL_SWITCH=0` in its
+environment. No profile starts and the kill switch stays off for that run, so thronectl on
+the same device can change the settings, such as with
+`thronectl settings set kill_switch=false` or `thronectl tun off`. Then start Throne as
+usual. Until `kill_switch` is off, profiles stay refused in that run, so none runs without
+the kill switch.
+
+After three starts in a row without a working core, Throne stays up instead of exiting
+with status 70 or 71 (`degraded` is `core_gave_up` when its core gave up; see also
+[Watchdog](#watchdog)), so the API stays reachable for such a fix even without these flags.
+An unusable `config/api.key` keeps the API off: delete it, and Throne creates a new key at
+its next start.
 
 ## Objects
 
@@ -139,6 +439,7 @@ admin request gets 403 `forbidden`. The key is the same for both kinds.
   "profile": {"id": 12, "name": "DE Frankfurt", "...": "a Profile object"},
   "last_profile_id": 12,
   "tun": true,
+  "tun_conflict": null,
   "system_proxy": false,
   "route": {"id": 1, "name": "Default", "active": true},
   "kill_switch": "off",
@@ -157,6 +458,7 @@ admin request gets 403 `forbidden`. The key is the same for both kinds.
 | `profile` | The running profile, or `null` |
 | `last_profile_id` | The profile `{"select": "last"}` would start, or `-1` |
 | `tun`, `system_proxy` | Whether the mode is on. The modes apply while a profile runs |
+| `tun_conflict` | `null`, or why Tun cannot be turned on because something else on this computer holds it, such as another Throne (see [One Tun per computer](#one-tun-per-computer)); turning Tun on meanwhile gets `tun_conflict`. `null` while this Throne runs Tun itself. The text is for people and may be translated |
 | `route` | The active routing profile, or `null` if it no longer exists |
 | `kill_switch` | `off`, `arming`, `armed` or `failed` |
 | `core` | Whether Throne's core process is up |
@@ -164,13 +466,13 @@ admin request gets 403 `forbidden`. The key is the same for both kinds.
 | `version` | Throne's version |
 | `capabilities` | What this Throne can do, below |
 | `restart_needed` | Changes, such as settings, wait for the running profile to restart. `PUT /v1/connection` with `restart` applies them |
-| `degraded` | `null`, or why Throne cannot work as set up: `core_unavailable` (the core process is not up) or `kill_switch_failed` (the kill switch is on and failed) |
+| `degraded` | `null`, or why Throne cannot work as set up: `core_unavailable` (the core process is not up) or `kill_switch_failed` (the kill switch is on and failed). [Headless Throne](#headless-throne) reports more reasons |
 
 | Capability | |
 |---|---|
-| `tun` | Throne has the privileges Tun needs, as far as it knows without asking, or is set not to ask for them. `null` while Throne does not know yet: on Linux and macOS, before the core connects or while its privilege check runs |
-| `kill_switch` | The kill switch works on this system |
-| `headless` | Throne runs without a window |
+| `tun` | Throne can run Tun, as far as it knows without asking, or is set not to ask for privileges. On Linux and macOS the core checks its own privileges each time it starts: on Linux it needs to run as root or with the capabilities Tun needs, with CAP_NET_ADMIN in effect, and to open `/dev/net/tun`, so a root container without `NET_ADMIN` or the tun device gets `false`; on macOS it needs to run as root (a setuid-root core). On Windows Throne needs to be elevated. `null` while Throne does not know yet: on Linux and macOS, before the core connects or while its check runs. `Throne --check` names what is missing |
+| `kill_switch` | The kill switch works here: it needs a core that runs as root with CAP_NET_ADMIN on Linux, one that runs as root on macOS, and an elevated Throne on Windows. Until the core has answered its check, this only says whether the system supports the kill switch |
+| `headless` | Throne runs without a window (`Throne --headless`) and asks nothing; see [Headless Throne](#headless-throne) |
 
 ### Job
 
@@ -426,9 +728,17 @@ a running profile, so this request takes the [waiting](#waiting) fields.
 
 Returns the [Status](#status).
 
+When [headless Throne](#headless-throne) could not bring Tun mode back at its start
+(`degraded` is `tun_unavailable`, `tun` is false), `"tun": false` turns Tun mode off for
+good and clears that. It starts no profile; `PUT /v1/connection` does.
+
 Errors: `needs_privileges` (Tun needs privileges that Throne does not have; grant them in
-Throne once), `mixed_inbound_disabled` (the system proxy needs Throne's mixed inbound),
-plus the errors of `PUT /v1/connection` for the restart.
+Throne once, or start headless Throne with them), `tun_conflict` (something else on this
+computer holds Tun, such as another Throne; the message and `tun_conflict` in the
+[Status](#status) say what, see [One Tun per computer](#one-tun-per-computer)),
+`mixed_inbound_disabled` (the system proxy needs Throne's mixed inbound),
+`system_proxy_unsupported` (headless Throne never sets the system proxy), plus the errors of
+`PUT /v1/connection` for the restart.
 
 ### `GET /v1/routes`
 
@@ -560,7 +870,7 @@ Errors: `bad_request`, `busy` (a profile is starting or stopping, or a test is r
 
 | Setting | Type | | Restart |
 |---|---|---|---|
-| `remember_enable` | bool | Remember the running profile and start it again when Throne starts | |
+| `remember_enable` | bool | Remember the running profile and start it again when Throne starts. Headless Throne does that either way, unless it was started with `--no-resume` | |
 | `log_level` | string | Core log level: `trace`, `debug`, `info`, `warn`, `error`, `fatal` or `panic` | profile |
 | `xray_log_level` | string | Xray log level: `debug`, `info`, `warning`, `error` or `none` | profile |
 | `inbound_enabled` | bool | Throne's mixed inbound is on. `false` is refused while the system proxy is on | profile |
@@ -572,11 +882,17 @@ Errors: `bad_request`, `busy` (a profile is starting or stopping, or a test is r
 | `sub_auto_update` | number | Minutes between automatic subscription updates: 30 to 525600, `0` off | |
 | `sub_respect_server_interval` | bool | Use the update interval a subscription asks for | |
 | `route_auto_update` | number | Minutes between automatic updates of remote routing profiles: 30 to 525600, `0` off | |
-| `kill_switch` | bool | The kill switch | |
+| `kill_switch` | bool | The [kill switch](#kill-switch) | |
 | `tun_strict_route` | bool | Tun strict routing | tun |
 | `tun_auto_redirect` | bool | Tun auto redirect. Linux only | tun |
 | `tun_mtu` | number | Tun MTU: 1000 to 10000 | tun |
 | `tun_ipv6` | bool | Tun takes IPv6 traffic | tun |
+| `tun_ipv4_cidr` | string | Tun's IPv4 address with its prefix length, such as `172.19.0.1/24`: a range that no network of the computer uses (see [One Tun per computer](#one-tun-per-computer)) | tun |
+| `tun_ipv6_cidr` | string | Tun's IPv6 address with its prefix length, such as `fdfe:dcba:9876::1/96`, used while `tun_ipv6` is true | tun |
+| `dns_in_port` | number | Port of the core's DNS server on `127.0.0.1`, TCP and UDP: 1 to 65535, and none of Throne's other ports | profile |
+| `clash_api_port` | number | Port of the core's Clash API: 1 to 65535 and none of Throne's other ports, `0` off | profile |
+| `clash_listen_addr` | string | Listen address of the Clash API: an IP address or host name, or `""` for `127.0.0.1`. Its secret is set only in Throne's settings window; without one, an address that is not loopback is refused, since anyone who reaches the Clash API controls the core | profile |
+| `singbox_api_port` | number | Port of the core's sing-box API on `127.0.0.1`: 1 to 65535 and none of Throne's other ports, `0` off | profile |
 | `remote_dns` | string | DNS server for proxied traffic, such as `https://8.8.8.8/dns-query` | profile |
 | `direct_dns` | string | DNS server for direct traffic, such as `localhost` | profile |
 | `ntp_enabled` | bool | The core keeps its time with NTP. Turning it on with an empty `ntp_interval` sets that to `30m` | profile |
@@ -584,8 +900,39 @@ Errors: `bad_request`, `busy` (a profile is starting or stopping, or a test is r
 | `ntp_interval` | string | How often NTP runs: a duration such as `30m` or `1h` | profile |
 
 Restart `profile`: the change takes effect when the running profile restarts. `tun`: the
-same, when Tun is on. Empty: at once. Turning an automatic update off keeps its interval
-for later; `GET` reads it as `0`.
+same, when Tun is on. Empty: at once. Turning an automatic update, the Clash API or the sing-box
+API off keeps its interval or port for later; `GET` reads it as `0`.
+
+### Kill switch
+
+While `kill_switch` is on, Throne blocks the traffic of its device that does not go through
+Throne, also while no profile runs, except loopback and, unless Throne is set otherwise, the
+local network. An API that listens on loopback only needs nothing more, since loopback is
+always allowed. When the Throne API listens on another address, the kill switch also lets
+out the replies to new connections that clients open to the API's port, on Linux, macOS and
+Windows, so a client can connect wherever it connects from. On macOS, API connections that
+are already open when the kill switch arms, as when it is turned on, are cut once, and
+their clients connect again; when it arms again while it is `armed`, as after a change to a
+setting it depends on, open connections stay.
+
+This exception goes by the port alone: another program that listens on the same port at
+another address of the device gets its replies through too. Programs on other ports get no
+exception: an SSH session from outside the local network ends when the kill switch arms.
+
+When the kill switch is on but cannot work, `kill_switch` is `failed` in the
+[Status](#status) and `degraded` is `kill_switch_failed`. Throne then refuses to start
+profiles with `kill_switch_inactive`, whose message says why. Turning `kill_switch` off ends
+this. Headless Throne logs the cause with a code, such as
+`[Kill switch] Not active (privilege): ...`:
+
+| Code | |
+|---|---|
+| `privilege` | Throne lacks the privileges the kill switch needs: root on Linux and macOS, a service or an elevated Throne on Windows |
+| `unsupported` | This system cannot run it, such as Linux without nftables, or a Linux service that grants capabilities instead of running as root. On Linux also when the core cannot adopt the kill switch's group, 1950896719: that needs CAP_SETGID and that GID mapped in the core's user namespace, which rootless and user-namespaced containers lack. Throne then keeps its core running without the group, and the kill switch keeps blocking traffic. With this code, `capabilities.kill_switch` is false |
+| `overridden` | Headless Throne was started with `--no-kill-switch` or `THRONE_KILL_SWITCH=0`: the kill switch stays off for that run |
+
+Other codes, such as `timeout` or `crash`, name a failure that may pass when Throne starts
+again.
 
 ## Rule-sets and geo files
 
@@ -803,7 +1150,8 @@ Returns `{"restored": ["profiles", "routes"], "skipped_rules": 0, "restarting": 
 `skipped_rules` counts the routing rules of the archive that this Throne could not read.
 Then Throne restarts, and until it is back every request, to any path, gets 503
 `restarting`. A restore in Throne's window does the same: once it has replaced the data,
-every request gets `restarting` until Throne has restarted.
+every request gets `restarting` until Throne has restarted. Headless Throne then exits or
+starts again on its own, as [`POST /v1/restart`](#post-v1restart) describes.
 
 Errors: `not_found`, `incomplete` (the upload is not complete), `invalid_archive` (Throne
 refused the archive when it checked it, or the archive holds what a restore through the API
@@ -825,12 +1173,26 @@ Admin. Restarts Throne. Throne asks nothing in its window. Responds 202 at once 
 `{"restarting": true, "resume": true}`; `resume` says whether Throne starts the running
 profile again after the restart, which it does when it remembers the last profile.
 
+[Headless Throne](#headless-throne) starts the running profile again unless it was started
+with `--no-resume`, whatever `remember_enable` says. It restarts as `--restart-mode` says:
+`exit` exits with status 75, for its service manager to start it again; `exec` starts
+Throne again in the same process on Linux and macOS, and on Windows starts a new Throne
+process and exits with status 0 (a Windows service always exits as `exit` does). The
+default, `auto`, exits when a service manager such as systemd, launchd or the Windows
+Service Control Manager, or the init of a container, started Throne, and starts it again
+otherwise, as from a terminal. Either way the connection drops; once Throne listens again,
+requests get `starting` until it has started.
+
 Errors: `busy` (a profile is starting or stopping, as while a restore stops it), `exiting`.
 
 ### `POST /v1/shutdown`
 
 Admin. Exits Throne, as Exit in its window does. Responds 202 at once with
 `{"stopping": true}`.
+
+[Headless Throne](#headless-throne) exits with status 0. A service manager that restarts it
+only after a failure, such as systemd with `Restart=on-failure`, leaves it stopped; a
+container restart policy of `always` or `unless-stopped` starts it again.
 
 Errors: `busy` (a profile is starting or stopping, as while a restore stops it), `exiting`.
 
@@ -840,15 +1202,17 @@ Errors: `busy` (a profile is starting or stopping, as while a restore stops it),
 |---|---|---|
 | `bad_request` | 400 | The request or its body is malformed |
 | `no_profiles` | 400 | The selection matched no profile |
-| `forbidden` | 403 | An admin request from another device, while Throne accepts them only from its own |
+| `forbidden` | 403 | An admin request from another device, while Throne accepts them only from its own: **Allow management from the local network** in Throne, or `--api-admin-lan` in headless Throne, accepts them |
 | `not_found` | 404 | Unknown path, profile, group, routing profile, job, backup or upload |
 | `method_not_allowed` | 405 | The path exists, the method does not |
 | `busy` | 409 | Another start, stop, test, update, backup or restore is in progress |
 | `superseded` | 409 | A newer start replaced this one before it ran |
 | `group_archived` | 409 | The group is archived |
-| `kill_switch_inactive` | 409 | The kill switch is on but not working, so Throne refuses to start profiles |
+| `kill_switch_inactive` | 409 | The kill switch is on but not working, so Throne refuses to start profiles; the message says why (see [Kill switch](#kill-switch)) |
 | `kill_switch_blocked` | 409 | The kill switch could not allow the profile's extra core |
 | `mixed_inbound_disabled` | 409 | The system proxy needs Throne's mixed inbound |
+| `system_proxy_unsupported` | 409 | Headless Throne never sets the system proxy |
+| `tun_conflict` | 409 | Something else on this computer holds Tun, such as another Throne; the message says what (see [One Tun per computer](#one-tun-per-computer)) |
 | `no_working_profile` | 409 | No candidate passed the latency test |
 | `stats_disabled` | 409 | Traffic statistics are turned off |
 | `editing` | 409 | What the request would change is open in an editor in Throne |
@@ -873,3 +1237,4 @@ Errors: `busy` (a profile is starting or stopping, as while a restore stops it),
 | `core_unavailable` | 503 | Throne's core process is not reachable |
 | `exiting` | 503 | Throne is shutting down |
 | `restarting` | 503 | Throne restarts after a restore, made through the API or in its window |
+| `starting` | 503 | Headless Throne has not finished starting; try again a moment later |

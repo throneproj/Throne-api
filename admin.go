@@ -425,7 +425,10 @@ func (a api) upload(ctx context.Context, r io.Reader, path string, size int64, n
 // Throne stops the running profile first, and unless NoWait is given it responds once the
 // parts are replaced. If the wait ends first, ApplyRestore returns the RestoreResult in
 // state StateApplying without an error, and the restore carries on in Throne. Until
-// Throne is back from the restart, every request fails with CodeRestarting.
+// Throne is back from the restart, every request fails with CodeRestarting. Headless
+// Throne (Capabilities.Headless) answers so only until it exits or starts again in the
+// same process; then connections fail until it listens again, and requests fail with
+// CodeStarting until it has started.
 //
 // Parts that hold profiles that would run programs or read files on Throne's device, or
 // subscription or routing profile URLs that are not http or https, fail with

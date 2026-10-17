@@ -55,7 +55,10 @@ func init() {
 			"Start a profile: by ID, the last one, or the one with the lowest latency.", cmdConnect},
 		{"disconnect", "[--no-wait]", "Stop the running profile.", cmdDisconnect},
 		{"toggle", "[--no-wait]", "Connect the last profile when idle, else disconnect.", cmdToggle},
-		{"tun", "on | off | toggle [--no-wait]", "Switch Tun mode.", cmdTun},
+		{"tun", "on | off | toggle [--no-wait]",
+			"Switch Tun mode. Turning it on fails with needs_privileges when Throne lacks the privileges Tun " +
+				"needs, and with tun_conflict while something else on this computer holds Tun, such as another " +
+				"Throne: one Throne at a time can run Tun on a computer, and thronectl status shows the conflict.", cmdTun},
 		{"proxy", "on | off | toggle [--no-wait]", "Switch the system proxy.", cmdProxy},
 		{"routes", "", "List the routing profiles.", cmdRoutes},
 		{"route", "<id> [--no-wait]", "Activate a routing profile.", cmdRoute},
@@ -222,7 +225,8 @@ Commands:
 	fmt.Fprint(w, `
 The key comes from THRONE_KEY, the file THRONE_KEY_FILE names, or --key-file. In Throne,
 Preferences > Integration Settings > Throne API > Copy for scripts copies THRONE_ADDR and
-THRONE_KEY.
+THRONE_KEY. For headless Throne, eval "$(Throne --print-connection)" exports THRONE_ADDR
+and THRONE_KEY_FILE; sudo drops them, so under sudo pass --key-file.
 
 Flags (also accepted after the command):
 `)
@@ -336,7 +340,8 @@ func (c *cli) key() (throne.Key, error) {
 		key, err = throne.ReadKeyFile(file)
 	default:
 		err = errors.New("no key: set THRONE_KEY or THRONE_KEY_FILE, or pass --key-file. In Throne, " +
-			"Preferences > Integration Settings > Throne API > Copy for scripts copies THRONE_ADDR and THRONE_KEY")
+			"Preferences > Integration Settings > Throne API > Copy for scripts copies THRONE_ADDR and THRONE_KEY; " +
+			"for headless Throne, eval the output of Throne --print-connection, or under sudo pass --key-file")
 	}
 	if err != nil {
 		return key, usageError{msg: strings.TrimPrefix(err.Error(), "throne: ")}
@@ -399,8 +404,11 @@ func (c *cli) exit(err error) int {
 		return 1
 	case errors.Is(err, throne.ErrRejected):
 		fmt.Fprintln(c.stderr, "error: Throne closed the connection without a response: the key is probably wrong. "+
-			"Copy it again in Throne: Preferences > Integration Settings > Throne API > Copy for scripts. "+
-			"From another device, check that its address is allowed there.")
+			"Copy it again in Throne: Preferences > Integration Settings > Throne API > Copy for scripts; "+
+			"for headless Throne, Throne --print-connection names its key file. "+
+			"From another device, check that its address is allowed there. "+
+			"After 5 failed attempts from one address, Throne refuses every connection from it for 60 s, "+
+			"so another client at this address that still has an old key locks this one out.")
 	case errors.As(err, &opErr) && opErr.Op == "dial":
 		fmt.Fprintf(c.stderr, "error: %s\nIs Throne running, with the Throne API enabled for %s?\n",
 			strings.TrimPrefix(err.Error(), "throne: "), c.addr)

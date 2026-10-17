@@ -16,6 +16,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	throne "github.com/throneproj/Throne-api"
 	"github.com/throneproj/Throne-api/internal/testserver"
@@ -175,6 +176,55 @@ func TestReadKeyFile(t *testing.T) {
 	}
 	if _, err := throne.ReadKeyFile(filepath.Join(dir, "missing")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing key file: err = %v", err)
+	}
+}
+
+// TestReadKeyFileEncodings checks that ReadKeyFile reads the encodings Throne reads, such
+// as the UTF-16 that Windows PowerShell writes, and tells them apart as Throne does.
+func TestReadKeyFileEncodings(t *testing.T) {
+	encode := func(order binary.AppendByteOrder, unit int, text string) []byte {
+		var b []byte
+		for _, r := range text {
+			if unit == 4 {
+				b = order.AppendUint32(b, uint32(r))
+				continue
+			}
+			for _, u := range utf16.Encode([]rune{r}) {
+				b = order.AppendUint16(b, u)
+			}
+		}
+		return b
+	}
+	bom, line := string(rune(0xFEFF)), testKey+"\r\n"
+	tests := []struct {
+		name string
+		data []byte
+		ok   bool
+	}{
+		{"UTF-8", []byte(line), true},
+		{"UTF-8 with a BOM", []byte(bom + line), true},
+		{"UTF-16LE with a BOM", encode(binary.LittleEndian, 2, bom+line), true},
+		{"UTF-16BE with a BOM", encode(binary.BigEndian, 2, bom+line), true},
+		{"UTF-32LE with a BOM", encode(binary.LittleEndian, 4, bom+line), true},
+		{"UTF-32BE with a BOM", encode(binary.BigEndian, 4, bom+line), true},
+		{"UTF-16LE with a partial unit at the end", append(encode(binary.LittleEndian, 2, bom+line), 'x'), true},
+		{"UTF-32BE with a partial unit at the end", append(encode(binary.BigEndian, 4, bom+line), 0, 0, 0), true},
+		{"UTF-16LE without a BOM", encode(binary.LittleEndian, 2, line), false},
+		{"UTF-16BE without a BOM", encode(binary.BigEndian, 2, line), false},
+		{"UTF-8 behind a UTF-16LE BOM", append([]byte{0xFF, 0xFE}, line...), false},
+		{"UTF-32LE with a value that is not a code point", append(encode(binary.LittleEndian, 4, bom+line), 0, 0, 0x11, 0), false},
+		{"UTF-16LE with a lone surrogate", append(encode(binary.LittleEndian, 2, bom+line), 0x00, 0xD8), false},
+		{"UTF-16LE with a short key", encode(binary.LittleEndian, 2, bom+testKey[1:]), false},
+	}
+	dir := t.TempDir()
+	for i, tt := range tests {
+		file := filepath.Join(dir, fmt.Sprint(i))
+		if err := os.WriteFile(file, tt.data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := throne.ReadKeyFile(file); (err == nil) != tt.ok {
+			t.Errorf("%s: err = %v", tt.name, err)
+		}
 	}
 }
 

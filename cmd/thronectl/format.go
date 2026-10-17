@@ -74,11 +74,16 @@ func writeStatus(w io.Writer, st *throne.Status) {
 			caps = append(caps, c.name)
 		}
 	}
-	for _, row := range [][2]string{
+	rows := [][2]string{
 		{"State", st.State},
 		{"Profile", profile},
 		{"Restart needed", yesNo(st.RestartNeeded)},
 		{"Tun", onOff(st.Tun)},
+	}
+	if st.TunConflict != nil {
+		rows = append(rows, [2]string{"Tun conflict", *st.TunConflict})
+	}
+	for _, row := range append(rows, [][2]string{
 		{"System proxy", onOff(st.SystemProxy)},
 		{"Route", fmt.Sprintf("%d %s", st.Route.ID, st.Route.Name)},
 		{"Kill switch", st.KillSwitch},
@@ -87,7 +92,7 @@ func writeStatus(w io.Writer, st *throne.Status) {
 		{"Inbound", inbound},
 		{"Capabilities", list(caps, "none")},
 		{"Version", st.Version},
-	} {
+	}...) {
 		fmt.Fprintf(w, "%s:\t%s\n", row[0], clean(row[1]))
 	}
 }

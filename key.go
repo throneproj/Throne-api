@@ -3,11 +3,13 @@ package throne
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/throneproj/Throne-api/internal/wire"
 )
@@ -31,18 +33,54 @@ func ParseKey(text string) (Key, error) {
 	return k, nil
 }
 
-// ReadKeyFile reads a key in its text form from a file.
+// ReadKeyFile reads a key in its text form from a file. As Throne does, it reads the file
+// as UTF-8, or as UTF-16 or UTF-32 when it starts with their byte order mark, which
+// Windows PowerShell writes.
 func ReadKeyFile(name string) (Key, error) {
 	b, err := os.ReadFile(name)
 	if err != nil {
 		return Key{}, fmt.Errorf("throne: read key: %w", err)
 	}
-	// Some Windows editors start the file with a byte order mark.
-	k, ok := parseKey(string(bytes.TrimPrefix(b, []byte{0xEF, 0xBB, 0xBF})))
+	k, ok := parseKey(decodeKeyText(b))
 	if !ok {
 		return Key{}, fmt.Errorf("throne: invalid key in %s: %s", name, keyFormat)
 	}
 	return k, nil
+}
+
+// decodeKeyText checks the byte order marks in Throne's order, so FF FE 00 00 is UTF-32LE
+// rather than UTF-16LE. Like Throne, it drops a partial UTF-16 or UTF-32 unit at the end.
+func decodeKeyText(b []byte) string {
+	switch {
+	case bytes.HasPrefix(b, []byte{0x00, 0x00, 0xFE, 0xFF}):
+		return decodeUTF32(b[4:], binary.BigEndian)
+	case bytes.HasPrefix(b, []byte{0xFF, 0xFE, 0x00, 0x00}):
+		return decodeUTF32(b[4:], binary.LittleEndian)
+	case bytes.HasPrefix(b, []byte{0xEF, 0xBB, 0xBF}):
+		return string(b[3:])
+	case bytes.HasPrefix(b, []byte{0xFE, 0xFF}):
+		return decodeUTF16(b[2:], binary.BigEndian)
+	case bytes.HasPrefix(b, []byte{0xFF, 0xFE}):
+		return decodeUTF16(b[2:], binary.LittleEndian)
+	}
+	return string(b)
+}
+
+func decodeUTF16(b []byte, order binary.ByteOrder) string {
+	units := make([]uint16, len(b)/2)
+	for i := range units {
+		units[i] = order.Uint16(b[2*i:])
+	}
+	return string(utf16.Decode(units))
+}
+
+func decodeUTF32(b []byte, order binary.ByteOrder) string {
+	var s strings.Builder
+	for ; len(b) >= 4; b = b[4:] {
+		// WriteRune writes U+FFFD for a value that is not a code point.
+		s.WriteRune(rune(order.Uint32(b)))
+	}
+	return s.String()
 }
 
 func parseKey(text string) (Key, bool) {

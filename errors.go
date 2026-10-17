@@ -47,9 +47,14 @@ const (
 // ErrRejected means that Throne closed the connection before it sent a complete
 // response. Throne closes the connection without a word when a request fails
 // authentication, so the key is probably wrong. It also refuses addresses outside its
-// allowed list, connections over its limits, an address for a minute after repeated
-// failures, and clients of an unsupported protocol version.
-var ErrRejected = errors.New("throne: connection closed before a response: the key is probably wrong, or Throne refused this connection")
+// allowed list, connections over its limits, and clients of an unsupported protocol
+// version. After 5 failed attempts within a minute from one address, Throne refuses
+// every connection from that address for 60 s, so a client there that still has an old
+// key locks out the others at that address, such as those behind the same NAT. It does
+// not do that when a client at the address authenticated in the last 10 minutes, and
+// never for loopback.
+var ErrRejected = errors.New("throne: connection closed before a response: the key is probably wrong, or Throne refused this connection " +
+	"(after 5 failed attempts from one address it refuses every connection from there for 60 s, so a client there with an old key locks the others out)")
 
 // APIError is an error response from Throne, one with a status of 400 or more.
 type APIError struct {

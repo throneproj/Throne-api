@@ -68,6 +68,14 @@ type Status struct {
 	// Tun and SystemProxy say whether the modes are on; they apply while a profile runs.
 	Tun         bool `json:"tun"`
 	SystemProxy bool `json:"system_proxy"`
+	// TunConflict is nil, or why Tun cannot be turned on because something else on this
+	// computer holds what Tun needs: one Throne at a time can run Tun on a computer.
+	// Headless Throne reports the throne-tun interface of another Throne, an interface that
+	// holds the address of its Tun, or its DNS port taken while no profile runs. A Throne
+	// with a window reports a headless Throne that runs on the same computer (Linux and
+	// macOS). It is nil while this Throne runs Tun itself. The text is for people and may
+	// be translated; turning Tun on meanwhile fails with CodeTunConflict.
+	TunConflict *string `json:"tun_conflict"`
 	// Route is the active routing profile.
 	Route Route `json:"route"`
 	// KillSwitch is "off", "arming", "armed" or "failed".
@@ -84,25 +92,55 @@ type Status struct {
 	// restart. Connect with Restart applies them.
 	RestartNeeded bool `json:"restart_needed"`
 	// Degraded is "", or why Throne cannot work as set up: DegradedCoreUnavailable or
-	// DegradedKillSwitchFailed.
+	// DegradedKillSwitchFailed, and in headless Throne also the other Degraded values.
+	// Take a value that is not among them as degraded too.
 	Degraded string `json:"degraded"`
 }
 
-// Values of Status.Degraded.
+// Values of Status.Degraded. Throne reports the first that applies, in this order. Only
+// headless Throne (Capabilities.Headless) reports those marked headless.
 const (
-	DegradedCoreUnavailable  = "core_unavailable"   // the core process is not up
-	DegradedKillSwitchFailed = "kill_switch_failed" // the kill switch is on and failed
+	DegradedCoreGaveUp          = "core_gave_up"          // headless: the core kept failing; Throne exits with status 70, or stays up after three starts without a working core
+	DegradedCoreUnavailable     = "core_unavailable"      // the core process is not up
+	DegradedKillSwitchFailed    = "kill_switch_failed"    // the kill switch is on and failed
+	DegradedAPIUnavailable      = "api_unavailable"       // headless: the Throne API is on but does not listen; only Throne --health shows it
+	DegradedTunUnavailable      = "tun_unavailable"       // headless: Tun could not come back at the start, so the profile did not start
+	DegradedResumeSuppressed    = "resume_suppressed"     // headless: the profile to resume stopped early three starts in a row
+	DegradedVPNAuthFailed       = "vpn_auth_failed"       // headless: a VPN server rejected the profile's credentials
+	DegradedVPNChallengePending = "vpn_challenge_pending" // headless: a VPN server asks for an answer Throne cannot give
 )
+
+// Error codes that only headless Throne returns.
+const (
+	CodeSystemProxyUnsupported = "system_proxy_unsupported" // 409: headless Throne never sets the system proxy
+	CodeStarting               = "starting"                 // 503: Throne has not finished starting; try again
+)
+
+// CodeTunConflict is the 409 that turning Tun on gets while something else on this
+// computer holds what Tun needs, such as the Tun of another Throne; Status.TunConflict
+// says what. A Throne with a window returns it while a headless Throne runs on the same
+// computer.
+const CodeTunConflict = "tun_conflict"
 
 // Capabilities say what a Throne can do.
 type Capabilities struct {
-	// Tun says whether Throne has the privileges Tun needs, as far as it knows without
-	// asking, or is set not to ask for them. It is nil while Throne does not know yet: on
-	// Linux and macOS, before the core connects or while its privilege check runs.
+	// Tun says whether Throne can run Tun, as far as it knows without asking, or is set
+	// not to ask for privileges. On Linux and macOS the core checks its own privileges
+	// each time it starts. On Linux it needs to run as root or with the capabilities Tun
+	// needs, CAP_NET_ADMIN in effect and /dev/net/tun, so a root container without
+	// NET_ADMIN or the tun device gets false. On macOS it needs to run as root (a
+	// setuid-root core), and on Windows Throne needs to be elevated. Tun is nil while
+	// Throne does not know yet: on Linux and macOS, before the core connects or while
+	// its check runs. Throne --check names what is missing.
 	Tun *bool `json:"tun"`
-	// KillSwitch says whether the kill switch works on this system.
+	// KillSwitch says whether the kill switch works here. It needs a core that runs as
+	// root with CAP_NET_ADMIN on Linux, one that runs as root on macOS, and an elevated
+	// Throne on Windows. Until the core has answered its check, KillSwitch only says
+	// whether this system supports the kill switch.
 	KillSwitch bool `json:"kill_switch"`
-	// Headless says whether Throne runs without a window.
+	// Headless says whether Throne runs without a window (Throne --headless). Headless
+	// Throne asks nothing: it never sets the system proxy (CodeSystemProxyUnsupported),
+	// answers CodeStarting until it has started, and reports more Degraded values.
 	Headless bool `json:"headless"`
 }
 

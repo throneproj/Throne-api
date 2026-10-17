@@ -32,6 +32,96 @@ $env:THRONE_ADDR = "127.0.0.1:9095"
 $env:THRONE_KEY_FILE = "$HOME\throne-api-key.txt"
 ```
 
+## Headless Throne
+
+`Throne --headless` runs Throne without a window, as a service or in a container. Its API is
+on from the start: it listens on `127.0.0.1:9095` and keeps the key in `config/api.key` in
+its data directory, readable only by the user Throne runs as. `Throne --print-connection`
+prints the shell commands that export `THRONE_ADDR` and `THRONE_KEY_FILE` for it, never the
+key itself. Run it through `eval` in sh, bash or zsh, as the user Throne runs as and with
+the same `--data-dir`:
+
+```sh
+eval "$(Throne --print-connection)"
+thronectl status
+```
+
+In PowerShell, set `$env:THRONE_ADDR` and `$env:THRONE_KEY_FILE` to the values it prints.
+It exits with status 2 when the API is off or failed to listen, or when its key is not in a
+file.
+
+Throne running as root keeps its data in `/var/lib/throne` on Linux, and the key file is
+root's. `sudo` drops `THRONE_KEY_FILE` from the environment, so run thronectl with `sudo`
+and `--key-file` (and `--addr` when Throne listens elsewhere than `127.0.0.1:9095`), or
+copy the key to a file of your own:
+
+```sh
+sudo Throne --print-connection
+# export THRONE_ADDR=127.0.0.1:9095
+# export THRONE_KEY_FILE=/var/lib/throne/config/api.key
+sudo thronectl --key-file /var/lib/throne/config/api.key status
+
+# or, as yourself
+mkdir -p ~/.config/throne
+sudo install -m 600 -o "$USER" /var/lib/throne/config/api.key ~/.config/throne/api-key
+export THRONE_KEY_FILE=~/.config/throne/api-key
+thronectl status
+```
+
+In a container, run thronectl inside it, such as with `docker exec <container> thronectl
+status`, and set `THRONE_KEY_FILE` in the container's environment. The listener is on the
+container's loopback, and admin requests are answered only from there.
+
+`--api-listen`, `--api-key-file`, `--api-admin-lan` and `--api-allow` (or `THRONE_API_LISTEN`,
+`THRONE_API_KEY_FILE`, `THRONE_API_ADMIN_LAN` and `THRONE_API_ALLOW`) change the listener;
+`--api-listen off` turns the API off. An empty `--api-allow` or `THRONE_API_ALLOW`, or one of
+only commas and spaces, makes Throne exit with status 64; leave `THRONE_API_ALLOW` unset to
+let in every device. Headless Throne never sets the system proxy and
+answers `starting` until it has started. `thronectl restart` makes it exit with status 75,
+for its service manager to start it again, or start again when it was started from a
+terminal (in the same process; on Windows as a new process); `thronectl shutdown` makes it
+exit with status 0.
+`Throne --health` prints `ok`, `degraded` and the state of the API's listener (`api`) as
+one line of JSON, and exits with status 0 when Throne works.
+[api.md](spec/api.md#headless-throne) has the details.
+
+`Throne --check`, run the same way, tells whether headless Throne can run as it is set up,
+and changes nothing: the data directory, TLS, the core, the privileges that Tun and the kill
+switch need, the ports, and the service manager, each on one `[ OK ]`, `[WARN]`, `[FAIL]` or
+`[INFO]` line with a fix where there is one. It exits with status 0 when nothing failed, and
+1 otherwise; missing privileges for Tun or the kill switch are only warnings.
+
+Under systemd, run it as a `Type=notify` service: Throne reports when it has started, keeps
+a status line for `systemctl status`, and with `WatchdogSec` reports that its main loop runs.
+It also watches its own progress: it exits with status 71 when a profile has been starting
+for 180 seconds or stopping for 90, and with 70 when its core has not been usable for 60
+seconds, for its service manager to start it again. After three starts in a row without a
+working core it stays up and restarts the core instead. [api.md](spec/api.md#systemd) has a
+unit.
+
+One Throne at a time can run Tun on a computer. `thronectl tun on` fails with `tun_conflict`
+while something else holds Tun, such as another Throne, and `thronectl status` shows what.
+When a network of the computer, such as a Docker bridge, already uses Tun's address, give
+Tun another range: `thronectl settings set tun_ipv4_cidr=172.29.0.1/24`.
+A Throne with a window warns when a headless Throne runs on the same computer, refuses Tun
+while it runs, and does not update itself while it runs from the same installation.
+[api.md](spec/api.md#one-tun-per-computer) has the details.
+
+The kill switch lets clients open new connections to the Throne API wherever they connect
+from: loopback is always allowed, and for a listener on another address it lets out the
+replies from the API's port, so also those of another program on that port at another
+address. On macOS, API connections already open when the kill switch is turned on are cut
+once, and clients connect again. [api.md](spec/api.md#kill-switch) has the details.
+
+If saved settings still keep headless Throne unreachable, such as Tun, or a kill switch
+that ends your SSH session, start it once with `--no-resume --no-kill-switch` (or
+`THRONE_RESUME=0` and `THRONE_KILL_SWITCH=0`): no profile starts and the kill switch stays
+off for that run, so thronectl on its device can change the settings, such as with
+`thronectl settings set kill_switch=false` or `thronectl tun off`. After three starts in a
+row without a working core, Throne stays up instead of exiting with status 70 or 71, so the
+API stays reachable. [api.md](spec/api.md#recovery) has the
+details.
+
 ## thronectl
 
 ```sh
@@ -42,7 +132,8 @@ or download a binary for Linux, Windows, macOS or FreeBSD from
 [Releases](https://github.com/throneproj/Throne-api/releases).
 
 thronectl reads the address from `THRONE_ADDR` and the key from `THRONE_KEY`, or from the
-file that `THRONE_KEY_FILE` names. It never takes the key itself as an argument.
+file that `THRONE_KEY_FILE` names; for headless Throne, `eval "$(Throne --print-connection)"`
+exports both variables. It never takes the key itself as an argument.
 
 | Flag | |
 |---|---|
@@ -55,7 +146,7 @@ Flags work before or after the command.
 
 | Command | |
 |---|---|
-| `status` | State, running profile, modes, routing profile, version |
+| `status` | State, running profile, modes, routing profile, version, and a Tun conflict when there is one |
 | `groups` | Groups and their IDs |
 | `profiles [--group N] [--name REGEX] [--ids 1,2]` | Profiles with their last test results |
 | `connect <id> \| last \| best [--group N] [--name REGEX] [--max-age 1h]` | Start a profile. `best` starts the one with the lowest latency, first testing those without a result younger than `--max-age`. Also takes `--restart` and `--no-wait` |
@@ -97,9 +188,10 @@ Throne (`thronectl job <id>`).
 
 `import`, `sub add`, `group`, `profile rm`, `settings set`, `backup`, `restart` and
 `shutdown` send admin requests. Throne answers them only on its own device, unless
-**Allow management from the local network** is on in its Throne API settings; elsewhere
-they fail with `forbidden`. Backup archives hold your profiles' credentials and OTP secrets
-in plain text: thronectl creates them readable only by you, so keep them that way.
+**Allow management from the local network** is on in its Throne API settings, or headless
+Throne was started with `--api-admin-lan`; elsewhere they fail with `forbidden`. Backup
+archives hold your profiles' credentials and OTP secrets in plain text: thronectl creates
+them readable only by you, so keep them that way.
 Throne refuses to `backup restore` an archive whose profiles would run programs or read
 files on its device, such as Extra Core profiles (`invalid_archive`); restore such an archive
 in Throne's window. `backup restore` and `shutdown` ask before they act; without a terminal
@@ -269,7 +361,12 @@ Errors:
   `throne.ErrorCode(err)` returns the code, such as `throne.CodeBusy`.
 - `throne.ErrRejected` means Throne closed the connection without answering. Throne does that
   when a request fails authentication, so the key is probably wrong, and also when it refuses
-  the connection: an address outside the allowed list, or too many connections.
+  the connection: an address outside the allowed list, too many connections, or an address
+  that failed too often. After 5 failed attempts within a minute from one address, Throne
+  refuses every connection from it for 60 s, so a client there that still has an old key
+  locks out the others at that address, such as those behind the same NAT or those that
+  reach a container through its published port. Throne skips that when a client at the
+  address authenticated in the last 10 minutes, and never refuses loopback.
 - Timeouts and cancellation return the `ctx` error, which `errors.Is` matches.
 
 ```go
@@ -295,8 +392,10 @@ case err != nil:
   or `THRONE_KEY` from a secret store. thronectl never accepts the key as an argument.
 - Traffic is encrypted and authenticated, on a LAN too, but there is no forward secrecy:
   whoever learns the key can read traffic recorded earlier. If the key leaks, generate a new
-  one in Throne. Keep the API on loopback unless you need it on the LAN, and there list the
-  devices that may connect under **Allowed addresses** in the Throne API tab.
+  one in Throne; for headless Throne, stop it, delete its key file, write a new one with
+  `thronectl keygen -o <file>` and start it again. Keep the API on loopback unless you need
+  it on the LAN, and there list the devices that may connect under **Allowed addresses** in
+  the Throne API tab, or with `--api-allow` in headless Throne.
 
 ## License
 
