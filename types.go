@@ -80,6 +80,9 @@ type Status struct {
 	Route Route `json:"route"`
 	// KillSwitch is "off", "arming", "armed" or "failed".
 	KillSwitch string `json:"kill_switch"`
+	// KillSwitchError is nil unless KillSwitch is "failed"; then why: "privilege", "unsupported",
+	// "config", "overridden" (headless --no-kill-switch), "tampered", "crash", "timeout" or "internal".
+	KillSwitchError *string `json:"kill_switch_error"`
 	// Core says whether Throne's core process is up.
 	Core bool `json:"core"`
 	// Inbound is Throne's mixed (SOCKS and HTTP) proxy inbound.

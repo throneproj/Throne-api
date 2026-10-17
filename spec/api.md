@@ -163,7 +163,7 @@ when no Throne answers:
 
 ```sh
 $ sudo Throne --health
-{"api":"listening","core_restarts":0,"degraded":null,"headless_dialogs":0,"ok":true,"previous_crash":false,"ready":true,"state":"running","stuck_s":0}
+{"api":"listening","core_restarts":0,"degraded":null,"headless_dialogs":0,"ok":true,"previous_crash":false,"previous_exit":{"at":1760700000,"code":75,"reason":"restart requested"},"ready":true,"state":"running","stuck_s":0}
 ```
 
 | Field | |
@@ -175,6 +175,7 @@ $ sudo Throne --health
 | `core_restarts` | How often the core process was restarted |
 | `headless_dialogs` | Questions Throne skipped because it has no window. It should stay `0`; the log names them |
 | `previous_crash` | The previous run of Throne did not end cleanly |
+| `previous_exit` | How the previous run ended, `{code, reason, at}` (seconds since the epoch), or `null`. After a service manager restarted Throne (exit 75, 70, 71) this is where the reason survives |
 | `api` | The Throne API's listener: `off`, `listening`, `key_invalid` (its key is missing or invalid), `failed` (it could not listen, as when another program holds its port), `retrying` (its address has not appeared yet, and Throne waits up to 30 seconds for it) or `address_missing` (its address has left every network interface, so no client reaches the API until it comes back) |
 
 They ask the running Throne through a socket that only the user Throne runs as can open:
@@ -461,6 +462,7 @@ its next start.
 | `tun_conflict` | `null`, or why Tun cannot be turned on because something else on this computer holds it, such as another Throne (see [One Tun per computer](#one-tun-per-computer)); turning Tun on meanwhile gets `tun_conflict`. `null` while this Throne runs Tun itself. The text is for people and may be translated |
 | `route` | The active routing profile, or `null` if it no longer exists |
 | `kill_switch` | `off`, `arming`, `armed` or `failed` |
+| `kill_switch_error` | `null` unless `kill_switch` is `failed`; then why: `privilege` (the core lacks the privileges), `unsupported` (this system or unit cannot run it, or the core cannot adopt its group), `config`, `overridden` (headless `--no-kill-switch`), `tampered`, `crash`, `timeout` or `internal` |
 | `core` | Whether Throne's core process is up |
 | `inbound` | Throne's mixed (SOCKS and HTTP) proxy: the configured listen address and port. `enabled` is false when it is turned off |
 | `version` | Throne's version |

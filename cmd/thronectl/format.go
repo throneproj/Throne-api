@@ -86,7 +86,7 @@ func writeStatus(w io.Writer, st *throne.Status) {
 	for _, row := range append(rows, [][2]string{
 		{"System proxy", onOff(st.SystemProxy)},
 		{"Route", fmt.Sprintf("%d %s", st.Route.ID, st.Route.Name)},
-		{"Kill switch", st.KillSwitch},
+		{"Kill switch", killSwitchText(st)},
 		{"Core", core},
 		{"Degraded", degraded},
 		{"Inbound", inbound},
@@ -478,4 +478,12 @@ func clean(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// killSwitchText adds the failure code to a failed kill switch.
+func killSwitchText(st *throne.Status) string {
+	if st.KillSwitchError != nil {
+		return st.KillSwitch + " (" + *st.KillSwitchError + ")"
+	}
+	return st.KillSwitch
 }
