@@ -31,6 +31,8 @@ const (
 	// maxUploadChunk is the most archive bytes UploadRestore sends in one request; in
 	// base64 they stay well within a client frame.
 	maxUploadChunk = 512 << 10
+	// maxLogLines is the largest limit Throne takes for the lines of its log.
+	maxLogLines = 1000
 )
 
 // backupChunk is how many archive bytes Backup asks for in one request.
@@ -162,6 +164,28 @@ func (a api) SetSettings(ctx context.Context, values map[string]any) (*SettingsC
 		values = map[string]any{}
 	}
 	return fetch[SettingsChange](ctx, a, &call{method: "PUT", path: "/v1/settings", body: map[string]any{"settings": values}})
+}
+
+// Logs returns lines of Throne's log, the log that Throne's window shows (GET
+// /v1/logs). It is an admin request, since the log names the sites that connections
+// went to. With q.Instance and q.Wait, Throne holds the request while no line follows
+// q.After, so a loop of Logs calls, each with the Instance and Cursor of the last, follows
+// the log.
+func (a api) Logs(ctx context.Context, q LogQuery) (*Logs, error) {
+	query := map[string]string{}
+	if q.Limit > 0 {
+		query["limit"] = strconv.Itoa(min(q.Limit, maxLogLines))
+	}
+	r := &call{method: "GET", path: "/v1/logs", query: query}
+	if q.Instance != "" {
+		query["instance"] = q.Instance
+		query["after"] = strconv.FormatInt(q.After, 10)
+		if t := waitSeconds(q.Wait); t > 0 {
+			query["timeout"] = strconv.Itoa(t)
+			r.wait = time.Duration(t) * time.Second
+		}
+	}
+	return fetch[Logs](ctx, a, r)
 }
 
 // UpdateRuleSets makes the core download the remote rule-sets of the running profile

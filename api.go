@@ -2,6 +2,7 @@ package throne
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -37,6 +38,49 @@ func (a api) Call(ctx context.Context, method, path string, query map[string]str
 		return fmt.Errorf("throne: invalid path %q: want a path such as /v1/status, without a query string", path)
 	}
 	return a.do(ctx, &call{method: method, path: path, query: query, body: body, wait: maxWait}, out)
+}
+
+// Response is a response as Throne sent it.
+type Response struct {
+	// Status is below 400, such as 200 or 202.
+	Status int
+	// Body is the JSON body, or nil when the response has none.
+	Body json.RawMessage
+}
+
+// Send sends any request like Call, and returns the status and body as Throne sent them.
+// A status of 400 or more returns an *APIError.
+func (a api) Send(ctx context.Context, method, path string, query map[string]string, body any) (*Response, error) {
+	if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#") {
+		return nil, fmt.Errorf("throne: invalid path %q: want a path such as /v1/status, without a query string", path)
+	}
+	resp := new(Response)
+	if err := a.do(ctx, &call{method: method, path: path, query: query, body: body, wait: maxWait}, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// Events returns the topics that changed after an earlier Events (GET /v1/events). With
+// q.Wait, Throne holds the request while nothing has changed, so a loop of Events calls
+// follows Throne's changes.
+func (a api) Events(ctx context.Context, q EventsQuery) (*Events, error) {
+	query := map[string]string{}
+	if q.Instance != "" {
+		query["instance"] = q.Instance
+		query["after"] = strconv.FormatInt(q.After, 10)
+	}
+	r := &call{method: "GET", path: "/v1/events", query: query}
+	if t := waitSeconds(q.Wait); t > 0 {
+		query["timeout"] = strconv.Itoa(t)
+		r.wait = time.Duration(t) * time.Second
+	}
+	return fetch[Events](ctx, a, r)
+}
+
+// waitSeconds turns a hold time into the timeout query parameter: whole seconds, at most 300.
+func waitSeconds(d time.Duration) int {
+	return min(int(d/time.Second), int(maxWait/time.Second))
 }
 
 // Status returns Throne's state (GET /v1/status).

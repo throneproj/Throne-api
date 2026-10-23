@@ -4,11 +4,12 @@ The requests Throne answers over the [wire protocol](protocol.md). Each request 
 `method` and a `path`, with an optional `query` and `body`, exactly as protocol.md describes.
 
 The API controls the connection, Tun and system proxy modes, the routing profile and tests,
-and it reads profiles and statistics. Its management requests also import profiles, add,
-update and delete groups and subscriptions, delete profiles, change a chosen set of
-settings, update rule-sets and geo files, back up and restore Throne's data, and restart or
-shut down Throne. Most of them are [admin requests](#scope), which Throne answers only from
-its own device unless it is set to allow them from the local network.
+and it reads profiles, statistics and Throne's log, and tells clients what changed. Its
+management requests also import profiles, add, update and delete groups and subscriptions,
+delete profiles, change a chosen set of settings, update rule-sets and geo files, back up
+and restore Throne's data, and restart or shut down Throne. Most of them are
+[admin requests](#scope), which Throne answers only from its own device unless it is set to
+allow them from the local network.
 
 Responses never contain profile credentials, outbound configurations or subscription URLs.
 Backups are the exception: they contain Throne's data, credentials included, in plain text.
@@ -63,18 +64,19 @@ selector profiles are never tested, so tests skip them.
 
 ## Scope
 
-Requests are control requests or admin requests. Admin requests import, delete, change
-settings, back up, restore, restart and shut down:
+Requests are control requests or admin requests. Admin requests read the log, import,
+delete, change settings, back up, restore, restart and shut down:
 
+- `GET /v1/logs`, since the log names the sites that connections went to
 - `POST /v1/import`
 - `POST /v1/groups`, `DELETE /v1/groups/{id}`, `DELETE /v1/profiles`
 - `PUT /v1/settings`
 - every request under `/v1/backups` and `/v1/restores`
 - `POST /v1/restart`, `POST /v1/shutdown`
 
-Every other request is a control request, among them `GET /v1/settings`, the subscription
-updates and the rule-set and geo file updates. Throne answers control requests from every
-client it lets in.
+Every other request is a control request, among them `GET /v1/settings`, `GET /v1/events`,
+the subscription updates and the rule-set and geo file updates. Throne answers control
+requests from every client it lets in.
 
 Throne answers admin requests only from its own device, that is from a loopback address
 such as `127.0.0.1` or `::1`. With **Allow management from the local network** on, in the
@@ -1166,6 +1168,101 @@ restore), `internal` (the restore failed; the upload stays for another try), `ex
 
 Discards the upload. Returns `{"deleted": 2}`. An upload whose archive is being checked is
 discarded too, and a `PUT` that still waits for the check gets `not_found`.
+
+## Logs and events
+
+A client follows Throne's log and its changes by repeating a request with what the last
+response returned; Throne answers with what came after it. Both requests work the same way:
+
+- `instance` in a response names the run of Throne: 16 lowercase hexadecimal digits that
+  Throne picks at random when it starts. A Throne that restarted, also after a
+  [restore](#post-v1restoresidapply) or with exit status 75, has a new one.
+- The client passes the `instance` and `cursor` of the last response back as the query
+  parameters `instance` and `after`. Without `instance`, or with that of an earlier run,
+  Throne ignores `after` and answers as it answers a new client.
+- With the current `instance`, `timeout` makes Throne hold the request while nothing
+  follows `after`, up to that many seconds. Without it, Throne responds at once. A client
+  that follows Throne sends a `timeout` such as 25.
+- A malformed `after`, `limit` or `timeout`, one that is not an integer or is out of range,
+  is a `bad_request` that names the parameter.
+
+Both work in Throne with a window and in headless Throne, and Throne does not log them.
+
+### `GET /v1/logs`
+
+Admin, since the log names the sites that connections went to. Returns lines of the log
+that Throne's window shows, core output included.
+
+| Parameter | |
+|---|---|
+| `instance` | The `instance` of an earlier response |
+| `after` | With the current `instance`: return the lines after this `seq` |
+| `limit` | 1 to 1000, default 200 |
+| `timeout` | Seconds, 0 to 300, default 0. With the current `instance`: while no line follows `after`, hold the request up to this long. Throne responds within about 250 ms of the next line |
+
+Without the current `instance` the response holds the newest `limit` lines, at once; with
+it, the oldest `limit` lines after `after`.
+
+```json
+{
+  "instance": "9f2c01d4a7be3355",
+  "cursor": 1452,
+  "more": false,
+  "dropped": 0,
+  "lines": [
+    {"seq": 1451, "time": 1760000000, "text": "..."},
+    {"seq": 1452, "time": 1760000001, "text": "..."}
+  ]
+}
+```
+
+| Field | |
+|---|---|
+| `seq` | Numbers the lines of one run of Throne from 1 |
+| `time` | When Throne logged the line |
+| `cursor` | The `seq` of the last line in `lines`. When `lines` is empty: `after`, with the current `instance`; else the newest `seq` Throne holds, `0` when it holds none |
+| `more` | Lines after `cursor` exist already: `limit` cut the response short |
+| `dropped` | With the current `instance`: the lines after `after` that Throne no longer holds. Else `0` |
+
+Throne holds the newest 5000 lines, and at most 4 MiB of text; it drops older ones. It
+splits what it logs into lines at each line feed, removes a carriage return at the end of a
+line and skips empty lines. A line longer than 8192 characters is cut to 8192 and ends
+with `…`.
+
+### `GET /v1/events`
+
+Says what changed in Throne, so that a client reads only that again.
+
+| Parameter | |
+|---|---|
+| `instance` | The `instance` of an earlier response |
+| `after` | With the current `instance`: report the changes after this `cursor` |
+| `timeout` | Seconds, 0 to 300, default 0. With the current `instance`: while nothing changed after `after`, hold the request up to this long |
+
+```json
+{"instance": "9f2c01d4a7be3355", "cursor": 57, "changes": ["status", "profiles"]}
+```
+
+`cursor` numbers the changes of one run of Throne: it starts at 0 and grows with each
+change. `changes` lists the topics that changed after `after`, in the order of the table
+below. Without the current `instance` it lists every topic, at once, and the client reads
+everything again. When nothing changed after `after`, Throne holds the request up to
+`timeout`; at the first change it waits 200 ms more for the changes that come with it,
+then responds. When `timeout` passes, `changes` is empty.
+
+| Topic | Read again | Throne reports it when |
+|---|---|---|
+| `status` | `GET /v1/status`, `GET /v1/routes` | The [Status](#status) changes, such as the connection, a mode, the routing profile, the kill switch or `restart_needed`, or the list of routing profiles changes |
+| `groups` | `GET /v1/groups` | Groups are added, deleted, renamed, reordered or updated, by imports and subscription updates too |
+| `profiles` | `GET /v1/profiles` | Profiles are added, deleted or changed, by imports, subscription updates, tests that end and cleared results too |
+| `tests` | `GET /v1/tests` | A test that the API started starts, ends or is cancelled |
+| `settings` | `GET /v1/settings` | Settings change, in Throne's window or through the API |
+
+Topics are hints: Throne may report a topic that did not change, and a client reads it
+again all the same. Results that a running test fills in, and the traffic counters
+(`traffic_up`, `traffic_down`), may change without a `profiles` change; Throne reports
+`profiles` when a test that the API started ends. While it holds a request, Throne compares
+the Status with the one before every second, so `status` follows every change of it.
 
 ## Program
 

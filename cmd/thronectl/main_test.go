@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	throne "github.com/throneproj/Throne-api"
 	"github.com/throneproj/Throne-api/internal/testserver"
@@ -199,6 +200,10 @@ func TestUsageErrors(t *testing.T) {
 		{"completion"},
 		{"completion", "tcsh"},
 		{"completion", "bash", "zsh"},
+		{"logs", "x"},
+		{"logs", "-n", "0"},
+		{"logs", "-n", "1001"},
+		{"logs", "-n", "x"},
 	} {
 		code, stdout, stderr := runCLI(t, env, args...)
 		if code != 2 || stderr == "" || stdout != "" {
@@ -1041,5 +1046,132 @@ func TestKeygen(t *testing.T) {
 	}
 	if again, _ := os.ReadFile(file); !bytes.Equal(again, first) {
 		t.Error("keygen -o overwrote a key")
+	}
+}
+
+// logPage is a response of GET /v1/logs with lines numbered from seq.
+func logPage(instance string, cursor, dropped int, seq int, texts ...string) *testserver.Response {
+	lines := []map[string]any{}
+	for i, text := range texts {
+		lines = append(lines, map[string]any{"seq": seq + i, "time": 1760000000 + seq + i, "text": text})
+	}
+	return testserver.OK(map[string]any{"instance": instance, "cursor": cursor, "more": false, "dropped": dropped, "lines": lines})
+}
+
+func TestLogs(t *testing.T) {
+	f, env := startFake(t)
+	f.on("GET /v1/logs", func(*testserver.Request) *testserver.Response {
+		return logPage("a", 3, 0, 2, "\x1b[36mINFO\x1b[0m [Core] started <ok>", "tab\there\x07")
+	})
+	code, stdout, stderr := runCLI(t, env, "logs")
+	if code != 0 || stdout != "INFO [Core] started <ok>\ntab here \n" {
+		t.Fatalf("logs: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	if q := f.last(t).Query; !reflect.DeepEqual(q, map[string]string{"limit": "200"}) {
+		t.Errorf("logs query %v", q)
+	}
+
+	code, stdout, _ = runCLI(t, env, "--json", "logs", "-n", "5")
+	var got []throne.LogLine
+	for line := range strings.Lines(stdout) {
+		var l throne.LogLine
+		if err := json.Unmarshal([]byte(line), &l); err != nil {
+			t.Fatalf("--json logs: line %q: %v", line, err)
+		}
+		got = append(got, l)
+	}
+	want := []throne.LogLine{{Seq: 2, Time: 1760000002, Text: "\x1b[36mINFO\x1b[0m [Core] started <ok>"}, {Seq: 3, Time: 1760000003, Text: "tab\there\x07"}}
+	if code != 0 || !reflect.DeepEqual(got, want) || !strings.Contains(stdout, "<ok>") {
+		t.Errorf("--json logs: exit %d, %q", code, stdout)
+	}
+	if q := f.last(t).Query; !reflect.DeepEqual(q, map[string]string{"limit": "5"}) {
+		t.Errorf("logs -n 5 query %v", q)
+	}
+
+	f.on("GET /v1/logs", func(*testserver.Request) *testserver.Response {
+		return testserver.Error(403, "forbidden", "Management requests are accepted only from this device.")
+	})
+	for _, args := range [][]string{{"logs"}, {"logs", "-f"}} {
+		code, stdout, stderr = runCLI(t, env, args...)
+		if code != 1 || stdout != "" || stderr != "error: forbidden: Management requests are accepted only from this device.\n" {
+			t.Errorf("%q forbidden: exit %d, stdout %q, stderr %q", args, code, stdout, stderr)
+		}
+	}
+}
+
+// followLogs makes logs -f stop when ctx ends and try again soon, until the test ends.
+func followLogs(t *testing.T, ctx context.Context, cancel context.CancelFunc) {
+	oldUntil, oldRetry := untilInterrupted, followRetry
+	untilInterrupted = func(context.Context) (context.Context, context.CancelFunc) { return ctx, cancel }
+	followRetry = 10 * time.Millisecond
+	t.Cleanup(func() { untilInterrupted, followRetry = oldUntil, oldRetry })
+}
+
+func TestLogsFollow(t *testing.T) {
+	f, env := startFake(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	followLogs(t, ctx, cancel)
+	follow := func(instance string, after int) map[string]string {
+		return map[string]string{"instance": instance, "after": strconv.Itoa(after), "limit": "1000", "timeout": "25"}
+	}
+	steps := []struct {
+		query map[string]string
+		resp  func() *testserver.Response
+	}{
+		{map[string]string{"limit": "2"}, func() *testserver.Response { return logPage("a", 2, 0, 1, "one", "two") }},
+		{follow("a", 2), func() *testserver.Response { return logPage("a", 9, 5, 8, "eight", "nine") }},
+		{follow("a", 9), func() *testserver.Response { return nil }},
+		{follow("a", 9), func() *testserver.Response { return testserver.Error(503, "starting", "Throne is starting") }},
+		{follow("a", 9), func() *testserver.Response { return logPage("b", 2, 0, 1, "b one", "b two") }},
+		{follow("b", 2), func() *testserver.Response { return logPage("b", 3, 1, 3, "b three") }},
+		{follow("b", 3), func() *testserver.Response { cancel(); return logPage("b", 3, 0, 4) }},
+	}
+	n := 0
+	f.on("GET /v1/logs", func(r *testserver.Request) *testserver.Response {
+		if n >= len(steps) {
+			return logPage("b", 3, 0, 4)
+		}
+		s := steps[n]
+		n++
+		if !reflect.DeepEqual(r.Query, s.query) {
+			t.Errorf("request %d: query %v, want %v", n, r.Query, s.query)
+		}
+		return s.resp()
+	})
+	code, stdout, stderr := runCLI(t, env, "logs", "-f", "-n", "2", "--timeout", "5s")
+	if code != 0 || stdout != "one\ntwo\neight\nnine\nb one\nb two\nb three\n" {
+		t.Fatalf("logs -f: exit %d, stdout %q, stderr %q", code, stdout, stderr)
+	}
+	lines := strings.Split(strings.TrimSuffix(stderr, "\n"), "\n")
+	if len(lines) != 4 || lines[0] != "thronectl: 5 lines were dropped" || !strings.HasSuffix(lines[1], "; trying again every 10ms") ||
+		lines[2] != "thronectl: Throne restarted" || lines[3] != "thronectl: 1 line was dropped" {
+		t.Errorf("logs -f: stderr %q", stderr)
+	}
+	if reqs := f.requests(); len(reqs) < len(steps) {
+		t.Errorf("logs -f stopped after %d requests", len(reqs))
+	}
+}
+
+func TestLogsFollowJSON(t *testing.T) {
+	f, env := startFake(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	followLogs(t, ctx, cancel)
+	n := 0
+	f.on("GET /v1/logs", func(r *testserver.Request) *testserver.Response {
+		n++
+		switch n {
+		case 1:
+			return logPage("a", 1, 0, 1, "one")
+		case 2:
+			return logPage("a", 2, 0, 2, "two")
+		}
+		return testserver.Error(400, "bad_request", "after is out of range")
+	})
+	code, stdout, stderr := runCLI(t, env, "--json", "logs", "-f")
+	if code != 1 || stdout != `{"seq":1,"time":1760000001,"text":"one"}`+"\n"+`{"seq":2,"time":1760000002,"text":"two"}`+"\n" ||
+		stderr != "error: bad_request: after is out of range\n" {
+		t.Errorf("--json logs -f: exit %d, stdout %q, stderr %q", code, stdout, stderr)
 	}
 }

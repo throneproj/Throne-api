@@ -12,7 +12,7 @@ This repository holds:
 
 - [`spec/`](spec): the [wire protocol](spec/protocol.md), the [requests](spec/api.md) and
   [test vectors](spec/vectors/v1.json);
-- `thronectl`, a command-line tool;
+- `thronectl`, a command-line tool that also serves a [web UI](#web-ui);
 - `github.com/throneproj/Throne-api`, a Go library (package `throne`).
 
 ## Enabling it in Throne
@@ -159,6 +159,7 @@ Flags work before or after the command.
 | `clear (--group N [--name REGEX] \| <id>...)` | Clear test results |
 | `live` | Current traffic rates |
 | `traffic [--by profile \| app] [--since 24h]` | Traffic totals; `--since` also takes days, such as `7d` |
+| `logs [-n N] [-f]` | The last N lines of Throne's log, 200 by default. `-f` then prints new lines until interrupted, through lost connections and restarts of Throne. With `--json`, a JSON object per line |
 | `import [--group N] (FILE \| - \| --url URL)` | Import share links, a subscription body, or a Clash, sing-box, Xray, WireGuard or OpenVPN configuration from a file of up to 900 KiB or standard input (`-`), or have Throne download a URL once. Default group: the one Throne shows |
 | `sub add <url> [--name NAME] [--no-auto-update] [--no-update]` | Add a subscription group, named after the URL's host by default, and download it |
 | `sub update (<id>... \| --all)` | Update subscription groups, or all that are not archived |
@@ -170,6 +171,7 @@ Flags work before or after the command.
 | `rulesets update` | Update the remote rule-sets of the running profile |
 | `geo`, `geo update [geoip \| geosite]... [--only-missing]` | Show the geo files, download them again |
 | `restart`, `shutdown [--yes]` | Restart Throne; make it exit, after asking |
+| `web [--listen ADDR] ...`, `web passwd` | Serve the [web UI](#web-ui); set its password |
 | `keygen [-o FILE]` | Generate a new key: print it, or write it to a new file that only you can read |
 | `call <METHOD> <PATH> [key=value ...] [--body JSON]` | Send any request from [api.md](spec/api.md) and print the response body |
 | `completion bash \| zsh \| fish \| powershell` | Print a [shell completion](#shell-completion) script |
@@ -186,7 +188,7 @@ when they are still running in Throne; `--no-wait` returns at once. Tests and ge
 can take minutes, so give them a longer `--timeout`; a test that outlasts it keeps running in
 Throne (`thronectl job <id>`).
 
-`import`, `sub add`, `group`, `profile rm`, `settings set`, `backup`, `restart` and
+`logs`, `import`, `sub add`, `group`, `profile rm`, `settings set`, `backup`, `restart` and
 `shutdown` send admin requests. Throne answers them only on its own device, unless
 **Allow management from the local network** is on in its Throne API settings, or headless
 Throne was started with `--api-admin-lan`; elsewhere they fail with `forbidden`. Backup
@@ -213,6 +215,7 @@ thronectl tun on
 thronectl route 2
 thronectl --timeout 2m test latency --group 3
 thronectl traffic --by app --since 7d
+thronectl logs -f
 thronectl call GET /v1/profiles group=3
 thronectl import links.txt --group 3
 thronectl sub add 'https://sub.example.com/abc' --name Provider
@@ -288,6 +291,52 @@ fpath=(~/.zfunc $fpath)
 
 The scripts ask thronectl what completes, so they keep up with new versions of it.
 
+## Web UI
+
+`thronectl web` serves a web UI for Throne: the connection and its modes, profiles and
+tests, imports and subscriptions, traffic, settings, backup and restore, and the live log.
+The browser talks to thronectl, and thronectl to Throne through the Throne API, at the
+address and with the key that the other commands use; Throne itself serves no web page.
+
+```sh
+thronectl web                       # serves http://127.0.0.1:9096/
+ssh -L 9096:127.0.0.1:9096 server   # from another computer; then open http://localhost:9096/
+thronectl web --listen '*:9096'     # on every address of this device, over HTTPS
+thronectl web passwd                # set a new password
+```
+
+It listens on `127.0.0.1:9096` by default, which only this device reaches; from elsewhere,
+use an SSH tunnel as above. On a network address it serves HTTPS with a self-signed
+certificate that it creates in its state directory, and prints the certificate's SHA-256
+fingerprint: compare it with the one your browser shows before you accept the certificate.
+`--tls-cert` and `--tls-key` give it a certificate of your own. `--tls off` serves plain
+HTTP, which carries the password and the session in the clear: use it only behind a TLS
+reverse proxy.
+
+Signing in takes a password. The first start creates one and prints it once. `thronectl web
+passwd` sets a new one, read from standard input or asked for twice on a terminal, of at
+least 8 characters; a running `thronectl web` then signs everyone out within 5 seconds.
+`--password-file` takes the password from a file instead, such as a Docker secret, and
+`passwd` then refuses.
+
+| Flag | Variable | Default |
+|---|---|---|
+| `--listen ADDR` | `THRONE_WEB_LISTEN` | `127.0.0.1:9096`. Takes `PORT`, `IP:PORT`, `[IPv6]:PORT` and `*:PORT` (every address), as Throne's `--api-listen` does |
+| `--state-dir DIR` | `THRONE_WEB_STATE_DIR` | systemd's `$STATE_DIRECTORY`, else `thronectl/web` in your configuration directory, such as `~/.config/thronectl/web`. It holds the password's hash and the certificate |
+| `--tls auto \| on \| off` | `THRONE_WEB_TLS` | `auto`: on, unless the address is loopback |
+| `--tls-cert FILE`, `--tls-key FILE` | `THRONE_WEB_TLS_CERT`, `THRONE_WEB_TLS_KEY` | A self-signed certificate in the state directory |
+| `--allow-host LIST` | `THRONE_WEB_ALLOW_HOST` | Host names that browsers may reach it by, separated by commas or spaces, such as that of a reverse proxy. On loopback it answers `localhost`, `127.0.0.1` and `::1` without them; on a network address it checks host names only when this is set |
+| `--password-file FILE` | `THRONE_WEB_PASSWORD_FILE` | The password in plain text |
+
+A flag wins over its variable. `--addr` and `--key-file` pick the Throne as for the other
+commands; under systemd, `LoadCredential=api.key:/path/to/key` passes the key too.
+
+The web UI is an admin client: it does what thronectl does, admin requests included, for
+whoever signs in, so give its password only to those who may manage Throne. On Throne's own
+device Throne answers its admin requests; elsewhere only with **Allow management from the
+local network** on (`--api-admin-lan` in headless Throne), and the web UI says so where it
+cannot act.
+
 ## Go library
 
 ```sh
@@ -338,20 +387,24 @@ func main() {
 Every request in [api.md](spec/api.md) has a method: `Status`, `Groups`, `Profiles`,
 `Profile`, `Connect`, `ConnectLast`, `ConnectLowestLatency`, `Disconnect`, `SetModes`,
 `Routes`, `SetRoute`, `StartTest`, `RunTest`, `Jobs`, `Job`, `CancelJob`, `ClearResults`,
-`LiveStats` and `Traffic`. The management requests have `Import`, `AddGroup`,
-`UpdateGroup`, `UpdateGroups`, `DeleteGroup`, `DeleteProfiles`, `Settings`, `SetSettings`,
-`UpdateRuleSets`, `GeoAssets`, `UpdateGeoAssets`, `Restart` and `Shutdown`; `Backup` writes
-a backup archive to an `io.Writer`, and `UploadRestore`, `RestoreStatus`, `ApplyRestore` and
-`CancelRestore` restore one. `Call` sends anything else. A `Client` opens one connection per call;
-`Client.Dial` opens a `Session` that carries several calls over one connection.
+`LiveStats`, `Traffic` and `Events`. The management requests have `Logs`, `Import`,
+`AddGroup`, `UpdateGroup`, `UpdateGroups`, `DeleteGroup`, `DeleteProfiles`, `Settings`,
+`SetSettings`, `UpdateRuleSets`, `GeoAssets`, `UpdateGeoAssets`, `Restart` and `Shutdown`;
+`Backup` writes a backup archive to an `io.Writer`, and `UploadRestore`, `RestoreStatus`,
+`ApplyRestore` and `CancelRestore` restore one. `Call` sends anything else, and `Send` does
+too and returns the status and body as Throne sent them. A `Client` opens one connection per
+call; `Client.Dial` opens a `Session` that carries several calls over one connection.
 
 - Requests that change something wait for the result. With a deadline in `ctx`, Throne
   gets a `timeout` that ends a little before it; when that passes, the call returns what
   Throne has so far without an error: for a connection change the current `Status`, in state
   `connecting` for example. `throne.NoWait()` returns at once.
-- Admin requests, which import, delete, change settings, back up, restore, restart and shut
-  down, are answered only from Throne's own device unless Throne allows management from the
-  local network; elsewhere they fail with `throne.CodeForbidden`.
+- Admin requests, which read the log, import, delete, change settings, back up, restore,
+  restart and shut down, are answered only from Throne's own device unless Throne allows
+  management from the local network; elsewhere they fail with `throne.CodeForbidden`.
+- `Events` and `Logs` follow Throne: call them again with the `Instance` and `Cursor` of the
+  last result and a `Wait`, and Throne holds the call until something changes or a line
+  follows.
 - ID 0 is a valid group and profile ID. Select profiles with `throne.SelectGroup(id, regex)`
   or `throne.SelectProfiles(ids...)`.
 

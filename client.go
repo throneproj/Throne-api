@@ -4,8 +4,8 @@
 // The requests are specified in spec/api.md and the wire protocol in spec/protocol.md
 // of this repository.
 //
-// Admin requests, which import, delete, change settings, back up, restore, restart and
-// shut down, are answered only from Throne's own device, unless Throne allows management
+// Admin requests, which import, delete, change settings, back up, restore, restart, shut
+// down and read the log, are answered only from Throne's own device, unless Throne allows management
 // from the local network; from elsewhere they fail with CodeForbidden. Their
 // documentation says that they are admin requests.
 package throne
@@ -321,6 +321,13 @@ func decode(ctx context.Context, msg []byte, out any) error {
 		return fmt.Errorf("throne: unexpected status %d from Throne", r.Status)
 	}
 	rawbody.Store(ctx, r.Body)
+	if resp, ok := out.(*Response); ok {
+		resp.Status = r.Status
+		if len(r.Body) > 0 && string(r.Body) != "null" {
+			resp.Body = r.Body
+		}
+		return nil
+	}
 	if out == nil || len(r.Body) == 0 {
 		return nil
 	}

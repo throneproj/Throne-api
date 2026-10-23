@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -70,6 +71,11 @@ func init() {
 		{"clear", "(--group N [--name REGEX] | <id>...)", "Clear the test results of profiles.", cmdClear},
 		{"live", "", "Show the current traffic rates.", cmdLive},
 		{"traffic", "[--by profile | app] [--since 24h]", "Show traffic totals.", cmdTraffic},
+		{"logs", "[-n N] [-f]",
+			"Show the last N lines of Throne's log, 200 by default, the log that Throne's window shows. With -f it " +
+				"then prints new lines as Throne logs them, until interrupted, also across lost connections and " +
+				"restarts of Throne. With --json each line is a JSON object of its seq, time and text. The log " +
+				"names the sites that connections went to, so this is an admin request.", cmdLogs},
 		{"import", "[--group N] (FILE | - | --url URL) [--no-wait]",
 			"Import profiles from a file, standard input or a URL. A file or standard input holds share links, a " +
 				"subscription body, a Clash, sing-box or Xray configuration, or a WireGuard or OpenVPN file, of at " +
@@ -91,6 +97,14 @@ func init() {
 				"--no-wait. A failed file makes the exit status 1.", cmdGeo},
 		{"restart", "", "Restart Throne.", cmdRestart},
 		{"shutdown", "[--yes]", "Make Throne exit. It asks first, unless --yes is given.", cmdShutdown},
+		{"web", "[--listen ADDR] [--state-dir DIR] [--tls auto | on | off] [--tls-cert FILE --tls-key FILE] " +
+			"[--allow-host LIST] [--password-file FILE] | passwd [--state-dir DIR]",
+			"Serve Throne's web UI, a browser front end for this Throne API, until interrupted. It listens on " +
+				"127.0.0.1:9096 by default; reach it from elsewhere through an SSH tunnel, or listen on a network " +
+				"address, where it serves HTTPS with a self-signed certificate whose fingerprint it prints. Signing " +
+				"in takes a password: the first start creates one and prints it, and passwd sets a new one. The web " +
+				"UI can do what thronectl does, admin requests included, so give its password only to those who " +
+				"may manage Throne.", cmdWeb},
 		{"keygen", "[-o FILE]", "Generate a new Throne API key. It does not connect to Throne.", cmdKeygen},
 		{"call", "<METHOD> <PATH> [key=value ...] [--body JSON]",
 			"Send any request and print the response body.", cmdCall},
@@ -338,6 +352,8 @@ func (c *cli) key() (throne.Key, error) {
 		}
 	case file != "":
 		key, err = throne.ReadKeyFile(file)
+	case c.credentialKey() != "":
+		key, err = throne.ReadKeyFile(c.credentialKey())
 	default:
 		err = errors.New("no key: set THRONE_KEY or THRONE_KEY_FILE, or pass --key-file. In Throne, " +
 			"Preferences > Integration Settings > Throne API > Copy for scripts copies THRONE_ADDR and THRONE_KEY; " +
@@ -347,6 +363,19 @@ func (c *cli) key() (throne.Key, error) {
 		return key, usageError{msg: strings.TrimPrefix(err.Error(), "throne: ")}
 	}
 	return key, nil
+}
+
+// credentialKey is the api.key credential that a systemd unit passes with LoadCredential, or "".
+func (c *cli) credentialKey() string {
+	dir := c.getenv("CREDENTIALS_DIRECTORY")
+	if dir == "" {
+		return ""
+	}
+	name := filepath.Join(dir, "api.key")
+	if _, err := os.Stat(name); err != nil {
+		return ""
+	}
+	return name
 }
 
 // errReported is a usage error that the flag package or the usage text already showed.

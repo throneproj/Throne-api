@@ -27,10 +27,14 @@ _thronectl() {
 
     (( directive & 1 )) && nospace=(-S '')
     (( $#cands )) && _describe -t values thronectl cands "${nospace[@]}" && ret=0
-    if (( directive & 2 )); then
+    if (( directive & 6 )); then
         # The file is the text after the first = of --key-file=FILE.
         [[ $PREFIX == -*=* ]] && compset -P 1 '*='
-        _files && ret=0
+        if (( directive & 4 )); then
+            _files -/ && ret=0
+        else
+            _files && ret=0
+        fi
     fi
     return ret
 }

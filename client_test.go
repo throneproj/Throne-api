@@ -795,3 +795,143 @@ func TestRunTestDeadline(t *testing.T) {
 		t.Fatalf("POST body %s", rec.requests()[0].Body)
 	}
 }
+
+func TestSend(t *testing.T) {
+	rec := &recorder{answer: func(r *testserver.Request) *testserver.Response {
+		switch r.Path {
+		case "/v1/created":
+			return testserver.Accepted(json.RawMessage(`{"id":4,"state":"building"}`))
+		case "/v1/null":
+			return testserver.OK(nil)
+		case "/v1/missing":
+			return testserver.Error(404, "not_found", "Unknown path")
+		}
+		return testserver.OK(json.RawMessage(`{"a":[1,2],"b":"x"}`))
+	}}
+	c, _ := serve(t, rec.handle)
+	tests := []struct {
+		method, path string
+		query        map[string]string
+		body         any
+		status       int
+		want         string
+	}{
+		{"GET", "/v1/status", nil, nil, 200, `{"a":[1,2],"b":"x"}`},
+		{"POST", "/v1/created", map[string]string{"x": "1"}, json.RawMessage(`{"parts":["otp"]}`), 202, `{"id":4,"state":"building"}`},
+		{"DELETE", "/v1/null", nil, map[string]any{"wait": false}, 200, ""},
+	}
+	for _, tt := range tests {
+		resp, err := c.Send(t.Context(), tt.method, tt.path, tt.query, tt.body)
+		if err != nil {
+			t.Fatalf("%s %s: %v", tt.method, tt.path, err)
+		}
+		if resp.Status != tt.status || (tt.want == "") != (resp.Body == nil) {
+			t.Errorf("%s %s: status %d, body %s", tt.method, tt.path, resp.Status, resp.Body)
+		}
+		if tt.want != "" {
+			jsonEqual(t, tt.path+": response body", resp.Body, tt.want)
+		}
+		r := rec.last(t)
+		if r.Method != tt.method || r.Path != tt.path || !reflect.DeepEqual(r.Query, tt.query) {
+			t.Errorf("%s %s: sent %s %s %v", tt.method, tt.path, r.Method, r.Path, r.Query)
+		}
+		if tt.body != nil {
+			b, _ := json.Marshal(tt.body)
+			jsonEqual(t, tt.path+": request body", r.Body, string(b))
+		} else if r.Body != nil {
+			t.Errorf("%s %s: sent the body %s", tt.method, tt.path, r.Body)
+		}
+	}
+
+	resp, err := c.Send(t.Context(), "GET", "/v1/missing", nil, nil)
+	var apiErr *throne.APIError
+	if resp != nil || !errors.As(err, &apiErr) || apiErr.Status != 404 || apiErr.Code != throne.CodeNotFound {
+		t.Fatalf("404: %+v, %v", resp, err)
+	}
+	n := len(rec.requests())
+	for _, path := range []string{"v1/status", "/v1/profiles?group=1", "/v1/x#y"} {
+		if _, err := c.Send(t.Context(), "GET", path, nil, nil); err == nil {
+			t.Errorf("Send accepted the path %q", path)
+		}
+	}
+	if len(rec.requests()) != n {
+		t.Error("a request that should fail locally reached the server")
+	}
+}
+
+func TestEvents(t *testing.T) {
+	rec := &recorder{answer: always(testserver.OK(json.RawMessage(
+		`{"instance":"9f2c01d4a7be3355","cursor":57,"changes":["status","profiles"],"added_later":1}`)))}
+	c, _ := serve(t, rec.handle)
+	tests := []struct {
+		q     throne.EventsQuery
+		query map[string]string
+		wait  time.Duration
+	}{
+		{throne.EventsQuery{}, nil, 0},
+		{throne.EventsQuery{Instance: "9f2c01d4a7be3355", After: 57},
+			map[string]string{"instance": "9f2c01d4a7be3355", "after": "57"}, 0},
+		{throne.EventsQuery{Instance: "9f2c01d4a7be3355", Wait: 25 * time.Second},
+			map[string]string{"instance": "9f2c01d4a7be3355", "after": "0", "timeout": "25"}, 25 * time.Second},
+		{throne.EventsQuery{Instance: "a", After: 3, Wait: 1500 * time.Millisecond},
+			map[string]string{"instance": "a", "after": "3", "timeout": "1"}, time.Second},
+		{throne.EventsQuery{Instance: "a", After: 3, Wait: 999 * time.Millisecond},
+			map[string]string{"instance": "a", "after": "3"}, 0},
+		{throne.EventsQuery{Instance: "a", After: 3, Wait: time.Hour},
+			map[string]string{"instance": "a", "after": "3", "timeout": "300"}, 300 * time.Second},
+		{throne.EventsQuery{Wait: 25 * time.Second}, map[string]string{"timeout": "25"}, 25 * time.Second},
+		{throne.EventsQuery{After: 9}, nil, 0},
+	}
+	want := &throne.Events{Instance: "9f2c01d4a7be3355", Cursor: 57, Changes: []string{throne.TopicStatus, throne.TopicProfiles}}
+	for _, tt := range tests {
+		ev, err := c.Events(t.Context(), tt.q)
+		if err != nil {
+			t.Fatalf("%+v: %v", tt.q, err)
+		}
+		if !reflect.DeepEqual(ev, want) {
+			t.Errorf("%+v: Events = %+v", tt.q, ev)
+		}
+		if r := rec.last(t); r.Method != "GET" || r.Path != "/v1/events" || !reflect.DeepEqual(r.Query, tt.query) || r.Body != nil {
+			t.Errorf("%+v: request %s %s %v %s, want the query %v", tt.q, r.Method, r.Path, r.Query, r.Body, tt.query)
+		}
+		if w := throne.EventsWait(tt.q); w != tt.wait {
+			t.Errorf("%+v: the call allows a hold of %v, want %v", tt.q, w, tt.wait)
+		}
+	}
+}
+
+// TestHeldRequests checks that Events and Logs on a ctx without a deadline outlast a hold,
+// on a Session too.
+func TestHeldRequests(t *testing.T) {
+	c, _ := serve(t, func(ctx context.Context, r *testserver.Request) *testserver.Response {
+		if r.Query["timeout"] != "" {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(1200 * time.Millisecond):
+			}
+		}
+		if r.Path == "/v1/logs" {
+			return testserver.OK(json.RawMessage(`{"instance":"a","cursor":3,"more":false,"dropped":0,` +
+				`"lines":[{"seq":3,"time":1760000000,"text":"x"}]}`))
+		}
+		return testserver.OK(json.RawMessage(`{"instance":"a","cursor":3,"changes":[]}`))
+	})
+	s, err := c.Dial(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ev, err := s.Events(context.Background(), throne.EventsQuery{Instance: "a", After: 3, Wait: time.Second})
+	if err != nil || ev.Cursor != 3 || ev.Changes == nil || len(ev.Changes) != 0 {
+		t.Fatalf("held Events: %+v, %v", ev, err)
+	}
+	logs, err := s.Logs(context.Background(), throne.LogQuery{Instance: "a", After: 2, Wait: time.Second})
+	if err != nil || len(logs.Lines) != 1 || logs.Lines[0].Text != "x" {
+		t.Fatalf("held Logs: %+v, %v", logs, err)
+	}
+	resp, err := s.Send(context.Background(), "GET", "/v1/events", map[string]string{"timeout": "1"}, nil)
+	if err != nil || resp.Status != 200 {
+		t.Fatalf("held Send: %+v, %v", resp, err)
+	}
+}

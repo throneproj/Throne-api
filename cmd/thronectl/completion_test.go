@@ -151,7 +151,28 @@ func TestComplete(t *testing.T) {
 		{[]string{"call", "put", "/v1/"}, []string{"/v1/connection", "/v1/modes", "/v1/routes/active", "/v1/settings"}, ":0"},
 		{[]string{"call", "GET", "v1/stats"}, []string{"v1/stats/live", "v1/stats/traffic"}, ":0"},
 		{[]string{"call", "GET", "/v1/status", ""}, nil, ":0"},
+		{[]string{"call", "get", "/v1/l"}, []string{"/v1/logs"}, ":0"},
 		{[]string{"keygen", "-o", ""}, nil, ":2"},
+		{[]string{"logs", "-"}, []string{"--addr", "-f", "--json", "--key-file", "-n", "--timeout"}, ":0"},
+		{[]string{"logs", "-n", ""}, nil, ":0"},
+		{[]string{"logs", "-f", ""}, nil, ":0"},
+		{[]string{"web", ""}, []string{"passwd"}, ":0"},
+		{[]string{"web", "--"}, []string{"--addr", "--allow-host", "--json", "--key-file", "--listen", "--password-file",
+			"--state-dir", "--timeout", "--tls", "--tls-cert", "--tls-key"}, ":0"},
+		{[]string{"web", "--tls", ""}, []string{"auto", "on", "off"}, ":0"},
+		{[]string{"web", "--tls=o"}, []string{"--tls=on", "--tls=off"}, ":0"},
+		{[]string{"web", "--state-dir", ""}, nil, ":4"},
+		{[]string{"web", "--state-dir=~/w"}, nil, ":4"},
+		{[]string{"web", "--tls-cert", ""}, nil, ":2"},
+		{[]string{"web", "--tls-key=k"}, nil, ":2"},
+		{[]string{"web", "--password-file", ""}, nil, ":2"},
+		{[]string{"web", "--listen", ""}, nil, ":0"},
+		{[]string{"web", "--allow-host", ""}, nil, ":0"},
+		{[]string{"web", "--listen", "*:9096", ""}, nil, ":0"},
+		{[]string{"web", "--state-dir", "d", ""}, []string{"passwd"}, ":0"},
+		{[]string{"web", "--allow-host", "a", "--t"}, []string{"--timeout", "--tls", "--tls-cert", "--tls-key"}, ":0"},
+		{[]string{"web", "passwd", "--"}, []string{"--addr", "--json", "--key-file", "--state-dir", "--timeout"}, ":0"},
+		{[]string{"web", "passwd", ""}, nil, ":0"},
 		{[]string{"status", "--", "-"}, nil, ":0"},
 		{[]string{"version", ""}, nil, ":0"},
 	}
@@ -466,6 +487,8 @@ func TestCompletionFlagsLeftOut(t *testing.T) {
 		})
 	}
 	before := map[string][]string{"test": {"latency"}, "profile": {"rm"}, "sub": {"update"}}
+	// The argument that the flags stand against; web's are those of serving, not of passwd.
+	argument := map[string]string{"web": "passwd"}
 	for name, alt := range alternatives {
 		cmd := findCommand(name)
 		if cmd == nil || len(before[name]) != alt.from {
@@ -480,7 +503,11 @@ func TestCompletionFlagsLeftOut(t *testing.T) {
 				continue
 			}
 			args := append(append([]string{name}, before[name]...), withValue(f)...)
-			if !refused(fl, append(args, "0")...) {
+			arg, ok := argument[name]
+			if !ok {
+				arg = "0"
+			}
+			if !refused(fl, append(args, arg)...) {
 				t.Errorf("thronectl %s: takes %s with an argument, but completion offers one or the other", name, flagText(fl))
 			}
 		}
@@ -776,6 +803,9 @@ for c in ${COMPREPLY[@]+"${COMPREPLY[@]}"}; do printf '%s\n' "$c"; done`
 		{line: "thronectl import a=", words: []string{"thronectl", "import", "a", "="}},
 		{line: `thronectl import k\ e`, words: []string{"thronectl", "import", `k\ e`}, want: []string{"k ey.txt"}},
 		{line: "thronectl import " + abs, words: absWords, want: []string{absWant}},
+		{line: "thronectl web --state-dir ", words: []string{"thronectl", "web", "--state-dir", ""}, want: []string{"sub dir"}},
+		{line: "thronectl web --state-dir=s", words: []string{"thronectl", "web", "--state-dir", "=", "s"}, want: []string{"sub dir"}},
+		{line: "thronectl web --state-dir k", words: []string{"thronectl", "web", "--state-dir", "k"}},
 		{line: "thronectl status ", words: []string{"thronectl", "status", ""}},
 		{line: "thronectl call GET /v1/s", words: []string{"thronectl", "call", "GET", "/v1/s"},
 			want: []string{"/v1/settings", "/v1/stats/live", "/v1/stats/traffic", "/v1/status"}},
@@ -802,6 +832,7 @@ for c in ${COMPREPLY[@]+"${COMPREPLY[@]}"}; do printf '%s\n' "$c"; done`
 		{line: "thronectl import su", words: []string{"thronectl", "import", "su"}, old: true, want: []string{`sub\ dir/`}},
 		{line: `thronectl import "k`, words: []string{"thronectl", "import", `"k`}, old: true, want: []string{"k ey.txt"}},
 		{line: "thronectl --key-file=k", words: []string{"thronectl", "--key-file=k"}, old: true, want: []string{`k\ ey.txt `}},
+		{line: "thronectl web --state-dir ", words: []string{"thronectl", "web", "--state-dir", ""}, old: true, want: []string{`sub\ dir/`}},
 	}
 	for _, tt := range tests {
 		version, typ := "", "37"
@@ -849,6 +880,8 @@ func TestPowerShellCompletion(t *testing.T) {
 		{line: "thronectl connect ", want: profiles},
 		{line: "thronectl import ", want: []string{"-", "'" + here + "k ey.txt'", here + "other", here + "x@y.txt", "'" + here + "sub dir'"}},
 		{line: "thronectl --key-file=k", want: []string{"--key-file='" + here + "k ey.txt'"}},
+		{line: "thronectl web --state-dir ", want: []string{"'" + here + "sub dir'"}},
+		{line: "thronectl web --state-dir=s", want: []string{"--state-dir='" + here + "sub dir'"}},
 		{line: "thronectl status "},
 		{line: "thronectl --addr "},
 		{line: "thronectl connect --max-age "},

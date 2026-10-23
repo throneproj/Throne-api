@@ -29,6 +29,16 @@ function __thronectl_complete
             __fish_complete_path "$current"
         end
     end
+    if contains -- $directive 4 5
+        if string match -q -- '-*=*' "$current"
+            set -l flag (string replace -r '=.*' '=' -- "$current")
+            for dir in (__fish_complete_directories (string replace -r '^[^=]*=' '' -- "$current"))
+                printf '%s\n' $flag$dir
+            end
+        else
+            __fish_complete_directories "$current"
+        end
+    end
 end
 
 complete -c thronectl -f -a '(__thronectl_complete)'

@@ -838,3 +838,55 @@ func TestUploadRestore(t *testing.T) {
 		}
 	})
 }
+
+func TestLogs(t *testing.T) {
+	var resp atomic.Pointer[testserver.Response]
+	resp.Store(testserver.OK(json.RawMessage(`{"instance":"9f2c01d4a7be3355","cursor":1452,"more":true,"dropped":3,` +
+		`"lines":[{"seq":1451,"time":1760000000,"text":"[Core] started"},{"seq":1452,"time":1760000001,"text":"…"}]}`)))
+	rec := &recorder{answer: func(*testserver.Request) *testserver.Response { return resp.Load() }}
+	c, _ := serve(t, rec.handle)
+	tests := []struct {
+		q     throne.LogQuery
+		query map[string]string
+		wait  time.Duration
+	}{
+		{throne.LogQuery{}, nil, 0},
+		{throne.LogQuery{Limit: 50}, map[string]string{"limit": "50"}, 0},
+		{throne.LogQuery{Limit: 5000}, map[string]string{"limit": "1000"}, 0},
+		{throne.LogQuery{Limit: -1}, nil, 0},
+		{throne.LogQuery{Wait: 25 * time.Second, After: 7}, nil, 0},
+		{throne.LogQuery{Instance: "9f2c01d4a7be3355", After: 1452, Limit: 1000, Wait: 25 * time.Second},
+			map[string]string{"instance": "9f2c01d4a7be3355", "after": "1452", "limit": "1000", "timeout": "25"}, 25 * time.Second},
+		{throne.LogQuery{Instance: "a", Wait: 400 * time.Millisecond}, map[string]string{"instance": "a", "after": "0"}, 0},
+		{throne.LogQuery{Instance: "a", After: 2, Wait: 2*time.Second + 900*time.Millisecond},
+			map[string]string{"instance": "a", "after": "2", "timeout": "2"}, 2 * time.Second},
+		{throne.LogQuery{Instance: "a", After: 2, Wait: 301 * time.Second},
+			map[string]string{"instance": "a", "after": "2", "timeout": "300"}, 300 * time.Second},
+	}
+	want := &throne.Logs{Instance: "9f2c01d4a7be3355", Cursor: 1452, More: true, Dropped: 3, Lines: []throne.LogLine{
+		{Seq: 1451, Time: 1760000000, Text: "[Core] started"}, {Seq: 1452, Time: 1760000001, Text: "…"}}}
+	for _, tt := range tests {
+		logs, err := c.Logs(t.Context(), tt.q)
+		if err != nil {
+			t.Fatalf("%+v: %v", tt.q, err)
+		}
+		if !reflect.DeepEqual(logs, want) {
+			t.Errorf("%+v: Logs = %+v", tt.q, logs)
+		}
+		if r := rec.last(t); r.Method != "GET" || r.Path != "/v1/logs" || !reflect.DeepEqual(r.Query, tt.query) || r.Body != nil {
+			t.Errorf("%+v: request %s %s %v %s, want the query %v", tt.q, r.Method, r.Path, r.Query, r.Body, tt.query)
+		}
+		if w := throne.LogsWait(tt.q); w != tt.wait {
+			t.Errorf("%+v: the call allows a hold of %v, want %v", tt.q, w, tt.wait)
+		}
+	}
+
+	resp.Store(testserver.OK(json.RawMessage(`{"instance":"b","cursor":0,"more":false,"dropped":0,"lines":[]}`)))
+	if logs, err := c.Logs(t.Context(), throne.LogQuery{}); err != nil || logs.Instance != "b" || logs.Lines == nil || len(logs.Lines) != 0 {
+		t.Fatalf("empty log: %+v, %v", logs, err)
+	}
+	resp.Store(testserver.Error(403, "forbidden", "Management requests are accepted only from this device."))
+	if _, err := c.Logs(t.Context(), throne.LogQuery{}); throne.ErrorCode(err) != throne.CodeForbidden {
+		t.Fatalf("err = %v, want forbidden", err)
+	}
+}

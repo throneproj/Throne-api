@@ -88,7 +88,7 @@ _thronectl() {
     done <<<"$out"
 
     COMPREPLY=()
-    if ((directive & 2)); then
+    if ((directive & 6)); then
         # The file is the word, or the text after the first = of --key-file=FILE.
         file=$word fprefix= w=$cur
         if [[ $word == -*=* ]]; then
@@ -97,10 +97,18 @@ _thronectl() {
         [[ $w == [\"\']* ]] && quoted=1
         if [[ -n $quoted ]] && type compopt >/dev/null 2>&1; then
             # Readline completes a quoted file name better.
-            compopt -o default 2>/dev/null
+            if ((directive & 4)); then
+                compopt -o dirnames 2>/dev/null
+            else
+                compopt -o default 2>/dev/null
+            fi
             return 0
         fi
-        out=$(compgen -f -- "$file")
+        if ((directive & 4)); then
+            out=$(compgen -d -- "$file")
+        else
+            out=$(compgen -f -- "$file")
+        fi
         while IFS= read -r line; do
             [[ -n $line && $fprefix$line == "$head"* ]] || continue
             value=$fprefix$line
@@ -126,7 +134,7 @@ _thronectl() {
         done
     fi
     if type compopt >/dev/null 2>&1; then
-        ((directive & 2)) && compopt -o filenames 2>/dev/null
+        ((directive & 6)) && compopt -o filenames 2>/dev/null
         ((directive & 1)) && compopt -o nospace 2>/dev/null
     else
         # bash 3.2, as on macOS, has no compopt: the script registers with -o nospace, and

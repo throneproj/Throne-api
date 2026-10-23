@@ -103,7 +103,7 @@ Register-ArgumentCompleter -Native -CommandName 'thronectl', 'thronectl.exe' -Sc
         if ($text -match '[\s''"`$;(){}@|&<>]') { $completion = "'" + $text.Replace("'", "''") + "'" }
         $results.Add([System.Management.Automation.CompletionResult]::new($completion, $text, 'ParameterValue', $desc))
     }
-    if ($directive -band 2) {
+    if ($directive -band 6) {
         $prefix = ''
         $file = $wordToComplete
         if ($file -match '^(-[^=]*=)(.*)$') {
@@ -111,10 +111,11 @@ Register-ArgumentCompleter -Native -CommandName 'thronectl', 'thronectl.exe' -Sc
             $file = $Matches[2]
         }
         foreach ($r in [System.Management.Automation.CompletionCompleters]::CompleteFilename($file)) {
+            if (($directive -band 4) -and $r.ResultType -ne 'ProviderContainer') { continue }
             $results.Add([System.Management.Automation.CompletionResult]::new($prefix + $r.CompletionText, $r.ListItemText, $r.ResultType, $r.ToolTip))
         }
     }
-    if ($results.Count -eq 0 -and -not ($directive -band 2)) {
+    if ($results.Count -eq 0 -and -not ($directive -band 6)) {
         # Where thronectl has nothing, an empty string keeps PowerShell from completing file
         # names: CompleteInput throws on it, which PSReadLine takes as no completion.
         return ''

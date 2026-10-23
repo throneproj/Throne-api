@@ -1,5 +1,7 @@
 package throne
 
+import "time"
+
 // Profile is a Throne profile. It never carries credentials or outbound configuration.
 type Profile struct {
 	ID    int    `json:"id"`
@@ -442,4 +444,75 @@ type RestoreResult struct {
 	// Restarting says that Throne restarts now. It is false when the wait ended first:
 	// the restore then carries on in Throne.
 	Restarting bool `json:"restarting"`
+}
+
+// Topics of Events.Changes.
+const (
+	TopicStatus   = "status"   // the Status, and with it the routing profiles
+	TopicGroups   = "groups"   // groups were added, deleted, renamed, reordered or updated
+	TopicProfiles = "profiles" // profiles were added, deleted or changed, test results included
+	TopicTests    = "tests"    // a test started or ended
+	TopicSettings = "settings" // settings changed
+)
+
+// Events says what changed in Throne (GET /v1/events). The topics are hints: read what
+// they name again.
+type Events struct {
+	// Instance names this run of Throne; a restarted Throne has a new one.
+	Instance string `json:"instance"`
+	// Cursor is the After of the next EventsQuery.
+	Cursor int64 `json:"cursor"`
+	// Changes are the topics that changed after the query's After, in the order of the
+	// Topic constants. A query without Instance, or with one of an earlier run, gets every
+	// topic.
+	Changes []string `json:"changes"`
+}
+
+// EventsQuery asks for the changes after an earlier Events.
+type EventsQuery struct {
+	// Instance and After are the Instance and Cursor of the earlier Events; the zero
+	// value asks for every topic.
+	Instance string
+	After    int64
+	// Wait makes Throne hold the request up to this long while nothing has changed; 0
+	// answers at once. Throne takes whole seconds, at most 300.
+	Wait time.Duration
+}
+
+// LogLine is a line of Throne's log.
+type LogLine struct {
+	// Seq numbers the lines of one run of Throne from 1.
+	Seq int64 `json:"seq"`
+	// Time is when Throne logged the line, in Unix seconds.
+	Time int64  `json:"time"`
+	Text string `json:"text"`
+}
+
+// Logs is a page of Throne's log (GET /v1/logs).
+type Logs struct {
+	// Instance names this run of Throne; a restarted Throne has a new one.
+	Instance string `json:"instance"`
+	// Cursor is the After of the next LogQuery: the Seq of the last line in Lines, or the
+	// query's After when Lines is empty.
+	Cursor int64 `json:"cursor"`
+	// More says that more lines follow Cursor already: the Limit cut this page short.
+	More bool `json:"more"`
+	// Dropped counts the lines after the query's After that Throne no longer keeps.
+	Dropped int64     `json:"dropped"`
+	Lines   []LogLine `json:"lines"`
+}
+
+// LogQuery selects lines of Throne's log.
+type LogQuery struct {
+	// Instance and After are the Instance and Cursor of an earlier Logs, for the lines
+	// after it. Without Instance, or with one of an earlier run, Logs returns the newest
+	// lines.
+	Instance string
+	After    int64
+	// Limit caps the lines; 0 means Throne's default of 200. Throne returns at most 1000.
+	Limit int
+	// Wait makes Throne hold the request up to this long while no line follows After; 0
+	// answers at once. It applies only with Instance. Throne takes whole seconds, at
+	// most 300.
+	Wait time.Duration
 }

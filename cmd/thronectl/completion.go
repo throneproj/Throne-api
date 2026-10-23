@@ -28,7 +28,8 @@ import (
 //
 //   - 1: no space after the candidate;
 //   - 2: file names complete CURRENT too, or the text after the first "=" of a CURRENT
-//     such as --key-file=FILE.
+//     such as --key-file=FILE;
+//   - 4: directory names do, likewise.
 //
 // It prints nothing else and exits 0, whatever the words.
 const completeCommand = "__complete"
@@ -36,6 +37,7 @@ const completeCommand = "__complete"
 const (
 	directiveNoSpace = 1 << iota
 	directiveFiles
+	directiveDirs
 )
 
 // completionWait bounds the requests to Throne for one completion.
@@ -312,6 +314,7 @@ var alternatives = map[string]alternative{
 	"profile": {1, []string{"group", "name"}},
 	"sub":     {1, []string{"all"}},
 	"import":  {0, []string{"url"}},
+	"web":     {0, []string{"listen", "tls", "tls-cert", "tls-key", "allow-host", "password-file"}},
 }
 
 // scope returns the subcommand or keyword that a flag goes with, which its usage starts
@@ -427,6 +430,15 @@ var flagValues = map[string]values{
 	"o":        fileNames,
 	"parts":    commaList(backupPartNames),
 	"body":     nil,
+	"n":        nil,
+
+	"listen":        nil,
+	"state-dir":     dirNames,
+	"tls":           words("auto", "on", "off"),
+	"tls-cert":      fileNames,
+	"tls-key":       fileNames,
+	"allow-host":    nil,
+	"password-file": fileNames,
 }
 
 // argValues completes the arguments of each command: given those before the argument under
@@ -457,6 +469,7 @@ var argValues = map[string]func(args []string) values{
 	"clear":   each(commaList(profileIDs)),
 	"live":    nil,
 	"traffic": nil,
+	"logs":    nil,
 	"import":  first(either(fixed(candidate{"-", "standard input"}), fileNames)),
 	"sub": subcommands(
 		sub{"add", "Add a subscription group", nil},
@@ -483,6 +496,7 @@ var argValues = map[string]func(args []string) values{
 		sub{"update", "Download the geo files", each(words(geoFiles...))}),
 	"restart":  nil,
 	"shutdown": nil,
+	"web":      subcommands(sub{"passwd", "Set the web UI password", nil}),
 	"keygen":   nil,
 	"call": func(args []string) values {
 		switch len(args) {
@@ -570,6 +584,10 @@ func fileNames(*completer, string) completion {
 	return completion{directive: directiveFiles}
 }
 
+func dirNames(*completer, string) completion {
+	return completion{directive: directiveDirs}
+}
+
 // commaList completes the last item of a comma-separated list with v, leaving out the
 // items before it.
 func commaList(v values) values {
@@ -617,7 +635,7 @@ func backupPartNames(_ *completer, word string) completion {
 // apiPaths are the paths of spec/api.md without an ID in them, by method, for call.
 var apiPaths = map[string][]string{
 	"GET": {"/v1/status", "/v1/groups", "/v1/profiles", "/v1/routes", "/v1/tests", "/v1/stats/live",
-		"/v1/stats/traffic", "/v1/settings", "/v1/geo-assets"},
+		"/v1/stats/traffic", "/v1/settings", "/v1/geo-assets", "/v1/logs", "/v1/events"},
 	"POST": {"/v1/import", "/v1/groups", "/v1/groups/update", "/v1/tests", "/v1/rule-sets/update",
 		"/v1/geo-assets/update", "/v1/backups", "/v1/restores", "/v1/restart", "/v1/shutdown"},
 	"PUT":    {"/v1/connection", "/v1/modes", "/v1/routes/active", "/v1/settings"},
