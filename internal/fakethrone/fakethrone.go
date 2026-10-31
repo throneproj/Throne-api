@@ -767,7 +767,7 @@ func (s *Server) seed() {
 		"test_concurrency": 10, "test_timeout_ms": 0, "sub_auto_update": 360, "sub_respect_server_interval": true,
 		"route_auto_update": 0, "kill_switch": false, "tun_strict_route": true, "tun_auto_redirect": false,
 		"tun_mtu": 9000, "tun_ipv6": false, "tun_ipv4_cidr": "172.19.0.1/24", "tun_ipv6_cidr": "fdfe:dcba:9876::1/96",
-		"dns_in_port": 5533, "clash_api_port": 0, "clash_listen_addr": "", "singbox_api_port": 0,
+		"dns_in_port": 5533, "dns_in_lan": false, "clash_api_port": 0, "clash_listen_addr": "", "singbox_api_port": 0,
 		"remote_dns": "https://8.8.8.8/dns-query", "direct_dns": "localhost", "ntp_enabled": false, "ntp_server": "",
 		"ntp_interval": "30m",
 	}

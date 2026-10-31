@@ -49,7 +49,8 @@ export const SETTINGS_GROUPS = [
     keys: [
       { key: 'remote_dns', label: 'Remote DNS', type: 'string', help: 'DNS server for proxied traffic, such as https://8.8.8.8/dns-query.', restart: 'profile' },
       { key: 'direct_dns', label: 'Direct DNS', type: 'string', help: 'DNS server for direct traffic, such as localhost.', restart: 'profile' },
-      { key: 'dns_in_port', label: 'DNS server port', type: 'number', min: 1, max: 65535, help: "Port of the core's DNS server on 127.0.0.1 (TCP and UDP), and none of Throne's other ports.", restart: 'profile' },
+      { key: 'dns_in_port', label: 'DNS server port', type: 'number', min: 1, max: 65535, help: "Port of the core's DNS server (TCP and UDP), and none of Throne's other ports.", restart: 'profile' },
+      { key: 'dns_in_lan', label: 'Allow other devices to use the DNS server', type: 'bool', help: 'Listen on every address instead of 127.0.0.1, for example for a router that sends its DNS through this computer. Anyone who reaches the port can resolve names through your DNS settings.', restart: 'profile' },
     ],
   },
   {

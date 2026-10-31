@@ -694,6 +694,7 @@ var settingNames = map[string]bool{
 	"tun_ipv4_cidr":               false,
 	"tun_ipv6_cidr":               false,
 	"dns_in_port":                 false,
+	"dns_in_lan":                  true,
 	"clash_api_port":              false,
 	"clash_listen_addr":           false,
 	"singbox_api_port":            false,

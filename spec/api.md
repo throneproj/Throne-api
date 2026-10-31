@@ -894,6 +894,7 @@ Errors: `bad_request`, `busy` (a profile is starting or stopping, or a test is r
 | `tun_ipv4_cidr` | string | Tun's IPv4 address with its prefix length, such as `172.19.0.1/24`: a range that no network of the computer uses (see [One Tun per computer](#one-tun-per-computer)) | tun |
 | `tun_ipv6_cidr` | string | Tun's IPv6 address with its prefix length, such as `fdfe:dcba:9876::1/96`, used while `tun_ipv6` is true | tun |
 | `dns_in_port` | number | Port of the core's DNS server on `127.0.0.1`, TCP and UDP: 1 to 65535, and none of Throne's other ports | profile |
+| `dns_in_lan` | bool | The core's DNS server listens on every address instead of `127.0.0.1`, so other devices, such as a router, can use it. Anyone who reaches the port can resolve names through Throne's DNS settings | profile |
 | `clash_api_port` | number | Port of the core's Clash API: 1 to 65535 and none of Throne's other ports, `0` off | profile |
 | `clash_listen_addr` | string | Listen address of the Clash API: an IP address or host name, or `""` for `127.0.0.1`. Its secret is set only in Throne's settings window; without one, an address that is not loopback is refused, since anyone who reaches the Clash API controls the core | profile |
 | `singbox_api_port` | number | Port of the core's sing-box API on `127.0.0.1`: 1 to 65535 and none of Throne's other ports, `0` off | profile |

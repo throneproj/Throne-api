@@ -895,6 +895,7 @@ var settingSpecs = map[string]settingSpec{
 	"tun_ipv4_cidr":               {kind: "string", restart: "tun", check: cidr(false)},
 	"tun_ipv6_cidr":               {kind: "string", restart: "tun", check: cidr(true)},
 	"dns_in_port":                 {kind: "number", restart: "profile", lo: 1, hi: 65535},
+	"dns_in_lan":                  {kind: "bool", restart: "profile"},
 	"clash_api_port":              {kind: "number", restart: "profile", lo: 1, hi: 65535, zero: true},
 	"clash_listen_addr":           {kind: "string", restart: "profile", check: clashListen},
 	"singbox_api_port":            {kind: "number", restart: "profile", lo: 1, hi: 65535, zero: true},
