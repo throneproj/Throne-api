@@ -123,6 +123,8 @@ func cmdSub(c *cli, fs *flag.FlagSet, args []string) error {
 	name := fs.String("name", "", "add: the group's `name` (default: the URL's host)")
 	noAuto := fs.Bool("no-auto-update", false, "add: leave the group out of Throne's automatic updates")
 	noUpdate := fs.Bool("no-update", false, "add: add the group without downloading it now")
+	route := fs.Int("route", -1, "add: give the group's profiles their own routing profile `ID` (default: follow the active one)")
+	importRoute := fs.Bool("import-route", false, "add: keep the routing profile the subscription provides, refreshed on every update")
 	all := fs.Bool("all", false, "update: every subscription group that is not archived")
 	noWait := fs.Bool("no-wait", false, "return at once instead of waiting for the update")
 	pos, err := c.parse(fs, args, 1, -1)
@@ -138,35 +140,40 @@ func cmdSub(c *cli, fs *flag.FlagSet, args []string) error {
 			return c.usageErr("missing URL")
 		case len(pos) > 2:
 			return c.usageErr("unexpected argument %q", pos[2])
+		case *route < -1:
+			return c.usageErr("--route wants a routing profile ID")
 		}
-		return subAdd(c, pos[1], *name, *noAuto, *noUpdate, *noWait)
+		g := throne.NewGroup{Name: *name, URL: pos[1], SkipAutoUpdate: *noAuto, SkipUpdate: *noUpdate, ImportRoute: *importRoute}
+		if *route >= 0 {
+			g.RouteID = route
+		}
+		return subAdd(c, g, *noWait)
 	case "update":
-		if *name != "" || *noAuto || *noUpdate {
-			return c.usageErr("--name, --no-auto-update and --no-update go with sub add")
+		if *name != "" || *noAuto || *noUpdate || *route != -1 || *importRoute {
+			return c.usageErr("--name, --no-auto-update, --no-update, --route and --import-route go with sub add")
 		}
 		return subUpdate(c, pos[1:], *all, *noWait)
 	}
 	return c.usageErr("want add or update, not %q", pos[0])
 }
 
-func subAdd(c *cli, link, name string, noAuto, noUpdate, noWait bool) error {
-	u, err := url.Parse(link)
-	if err != nil || !httpURL(link) {
-		return c.usageErr("want an http or https URL, not %q", link)
+func subAdd(c *cli, g throne.NewGroup, noWait bool) error {
+	u, err := url.Parse(g.URL)
+	if err != nil || !httpURL(g.URL) {
+		return c.usageErr("want an http or https URL, not %q", g.URL)
 	}
-	if name == "" {
-		name = u.Hostname()
+	if g.Name == "" {
+		g.Name = u.Hostname()
 	}
 	cl, ctx, err := c.open()
 	if err != nil {
 		return err
 	}
-	g := throne.NewGroup{Name: name, URL: link, SkipAutoUpdate: noAuto, SkipUpdate: noUpdate}
 	res, err := cl.AddGroup(ctx, g, waitOptions(noWait)...)
 	if err != nil {
 		return err
 	}
-	if err := c.show(func(w io.Writer) { writeAdded(w, res, !noUpdate) }); err != nil {
+	if err := c.show(func(w io.Writer) { writeAdded(w, res, !g.SkipUpdate) }); err != nil {
 		return err
 	}
 	if res.Update != nil && !res.Update.OK {

@@ -431,6 +431,7 @@ var flagValues = map[string]values{
 	"parts":    commaList(backupPartNames),
 	"body":     nil,
 	"n":        nil,
+	"route":    routeIDs,
 
 	"listen":        nil,
 	"state-dir":     dirNames,

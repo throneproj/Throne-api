@@ -83,6 +83,11 @@ type NewGroup struct {
 	SkipAutoUpdate bool
 	// SkipUpdate adds the subscription without downloading it now.
 	SkipUpdate bool
+	// RouteID gives the group's profiles their own routing profile; nil follows the active one.
+	RouteID *int
+	// ImportRoute keeps a routing profile from the one the subscription provides, refreshed on
+	// every update. Subscription groups only.
+	ImportRoute bool
 }
 
 // AddGroup adds a group at the end of the tab order (POST /v1/groups). It is an admin
@@ -101,6 +106,12 @@ func (a api) AddGroup(ctx context.Context, g NewGroup, opts ...Option) (*GroupRe
 	}
 	if g.SkipUpdate {
 		body["update"] = false
+	}
+	if g.RouteID != nil {
+		body["route_id"] = *g.RouteID
+	}
+	if g.ImportRoute {
+		body["import_route"] = true
 	}
 	return fetch[GroupResult](ctx, a, waiting(ctx, "POST", "/v1/groups", body, collect(opts), groupUpdateWait))
 }

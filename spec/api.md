@@ -423,16 +423,26 @@ its next start.
 ### Group
 
 ```json
-{"id": 3, "name": "Provider", "subscription": true, "archived": false, "profile_count": 120, "updated_at": 1760000000}
+{"id": 3, "name": "Provider", "subscription": true, "archived": false, "profile_count": 120, "updated_at": 1760000000, "route_id": -1, "import_route": false}
 ```
 
-`updated_at` is the last subscription update, `0` for a group without a subscription.
+| Field | |
+|---|---|
+| `updated_at` | The last subscription update, `0` for a group without a subscription |
+| `route_id` | The routing profile the group's profiles connect with, or `-1` when they follow the active one. An override naming a deleted routing profile reads as `-1`, as Throne then uses the active one |
+| `import_route` | Each subscription update refreshes a routing profile from the one the subscription provides (its `routing` header, in Happ's format). The first update makes it the group's `route_id` if the group follows the active one. Never `true` for a group without a subscription |
 
 ### Route
 
 ```json
-{"id": 1, "name": "Default", "active": true}
+{"id": 1, "name": "Default", "active": true, "in_use": true, "source_group_id": -1}
 ```
+
+| Field | |
+|---|---|
+| `active` | The routing profile [`PUT /v1/routes/active`](#put-v1routesactive) chose. A group can use its own instead (`route_id`) |
+| `in_use` | The running profile connects with it; while no profile runs, the same as `active` |
+| `source_group_id` | The subscription group whose updates rewrite its rules (`import_route`), or `-1`. Deleting that group deletes the routing profile; deleting the routing profile turns the group's `import_route` off |
 
 ### Status
 
@@ -462,7 +472,7 @@ its next start.
 | `last_profile_id` | The profile `{"select": "last"}` would start, or `-1` |
 | `tun`, `system_proxy` | Whether the mode is on. The modes apply while a profile runs |
 | `tun_conflict` | `null`, or why Tun cannot be turned on because something else on this computer holds it, such as another Throne (see [One Tun per computer](#one-tun-per-computer)); turning Tun on meanwhile gets `tun_conflict`. `null` while this Throne runs Tun itself. The text is for people and may be translated |
-| `route` | The active routing profile, or `null` if it no longer exists |
+| `route` | The routing profile in use: the running profile's, which its group can choose, else the active one; `null` if it no longer exists |
 | `kill_switch` | `off`, `arming`, `armed` or `failed` |
 | `kill_switch_error` | `null` unless `kill_switch` is `failed`; then why: `privilege` (the core lacks the privileges), `unsupported` (this system or unit cannot run it, or the core cannot adopt its group), `config`, `overridden` (headless `--no-kill-switch`), `tampered`, `crash`, `timeout` or `internal` |
 | `core` | Whether Throne's core process is up |
@@ -601,7 +611,7 @@ downloaded).
 Admin. Adds a group at the end of the tab order.
 
 ```json
-{"name": "Provider", "url": "https://sub.example/...", "auto_update": true, "update": true}
+{"name": "Provider", "url": "https://sub.example/...", "auto_update": true, "update": true, "route_id": -1, "import_route": false}
 ```
 
 | Field | |
@@ -610,6 +620,8 @@ Admin. Adds a group at the end of the tab order.
 | `url` | Makes a subscription group that downloads this http or https URL. Without it the group is a plain one |
 | `auto_update` | Default `true`: the subscription takes part in Throne's automatic updates |
 | `update` | Default `true`: download the subscription now |
+| `route_id` | Default `-1`, following the active routing profile; otherwise the routing profile the group's profiles connect with |
+| `import_route` | Default `false`: keep a routing profile from the one the subscription provides (see [Group](#group)). Needs `url` |
 
 The first update takes the [waiting](#waiting) fields, with a default `timeout` of 60. If
 it passes first, the response is 202 with `{"group": Group}` and the update carries on.
@@ -617,7 +629,7 @@ it passes first, the response is 202 with `{"group": Group}` and the update carr
 Returns `{"group": Group, "update": Update result}`. `update` is `null` when no update ran.
 A failed first update still returns 200, since the group exists, with `"ok": false`.
 
-Errors: `bad_request`.
+Errors: `bad_request`, `not_found` (`route_id` names no routing profile).
 
 ### `POST /v1/groups/{id}/update`
 
@@ -755,8 +767,9 @@ Returns `{"routes": [Route...]}`.
 ```
 
 Makes this routing profile active and restarts a running profile so it takes effect, so
-it takes the [waiting](#waiting) fields. If the routing profile is already active nothing
-restarts. Returns the [Status](#status).
+it takes the [waiting](#waiting) fields. If the routing profile is already active, or the
+running profile's group uses its own (`route_id`), nothing restarts. Returns the
+[Status](#status).
 
 Errors: `not_found`, `editing` (the routing profiles are open in an editor in Throne), plus
 the errors of `PUT /v1/connection` for the restart.

@@ -111,14 +111,16 @@ type Server struct {
 }
 
 type group struct {
-	id         int
-	name       string
-	url        string // the subscription URL, "" for a plain group
-	archived   bool
-	autoUpdate bool
-	updatedAt  int64
-	profiles   []int
-	update     *op // the subscription update under way
+	id          int
+	name        string
+	url         string // the subscription URL, "" for a plain group
+	archived    bool
+	autoUpdate  bool
+	updatedAt   int64
+	profiles    []int
+	update      *op // the subscription update under way
+	routeID     int // -1 follows the active routing profile
+	importRoute bool
 }
 
 // op is work that ends later. Once done is closed, resp is its outcome. Its methods run
@@ -672,7 +674,7 @@ func level(name string) string {
 }
 
 func (s *Server) addGroup(name, link string) *group {
-	g := &group{id: s.nextGroup, name: name, url: link, autoUpdate: true}
+	g := &group{id: s.nextGroup, name: name, url: link, autoUpdate: true, routeID: -1}
 	s.nextGroup++
 	s.groups = append(s.groups, g)
 	return g
@@ -759,8 +761,8 @@ func (s *Server) seed() {
 	}
 	s.shown = def.id
 
-	s.routes = []throne.Route{{ID: 0, Name: "Default"}, {ID: 1, Name: "Bypass LAN and China"}, {ID: 2, Name: "Global"},
-		{ID: 3, Name: "Iran direct"}}
+	s.routes = []throne.Route{{ID: 0, Name: "Default", SourceGroupID: -1}, {ID: 1, Name: "Bypass LAN and China", SourceGroupID: -1},
+		{ID: 2, Name: "Global", SourceGroupID: -1}, {ID: 3, Name: "Iran direct", SourceGroupID: -1}}
 	s.settings = map[string]any{
 		"remember_enable": true, "log_level": "info", "xray_log_level": "warning", "inbound_enabled": true,
 		"inbound_address": "127.0.0.1", "inbound_port": 2080, "test_url": "https://www.gstatic.com/generate_204",

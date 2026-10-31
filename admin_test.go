@@ -61,6 +61,11 @@ func TestAdminRequests(t *testing.T) {
 			_, err := c.AddGroup(ctx, throne.NewGroup{Name: "Provider", URL: "https://sub.example/x", SkipAutoUpdate: true, SkipUpdate: true})
 			return err
 		}, "POST", "/v1/groups", `{"name":"Provider","url":"https://sub.example/x","auto_update":false,"update":false}`},
+		{"add subscription with routing", func(ctx context.Context) error {
+			route := 0
+			_, err := c.AddGroup(ctx, throne.NewGroup{Name: "Provider", URL: "https://sub.example/x", RouteID: &route, ImportRoute: true})
+			return err
+		}, "POST", "/v1/groups", `{"name":"Provider","url":"https://sub.example/x","route_id":0,"import_route":true}`},
 		{"update group 0", func(ctx context.Context) error { _, err := c.UpdateGroup(ctx, 0); return err },
 			"POST", "/v1/groups/0/update", ""},
 		{"update groups", func(ctx context.Context) error { _, err := c.UpdateGroups(ctx, throne.NoWait()); return err },
@@ -212,8 +217,8 @@ func TestAdminWaitFields(t *testing.T) {
 func TestAdminResponses(t *testing.T) {
 	var resp atomic.Pointer[testserver.Response]
 	c, _ := serve(t, func(context.Context, *testserver.Request) *testserver.Response { return resp.Load() })
-	group := throne.Group{ID: 3, Name: "Provider", Subscription: true, ProfileCount: 12, UpdatedAt: 1760000000}
-	groupJSON := `{"id":3,"name":"Provider","subscription":true,"archived":false,"profile_count":12,"updated_at":1760000000}`
+	group := throne.Group{ID: 3, Name: "Provider", Subscription: true, ProfileCount: 12, UpdatedAt: 1760000000, RouteID: 2, ImportRoute: true}
+	groupJSON := `{"id":3,"name":"Provider","subscription":true,"archived":false,"profile_count":12,"updated_at":1760000000,"route_id":2,"import_route":true}`
 	tests := []struct {
 		name string
 		resp *testserver.Response

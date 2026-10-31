@@ -278,8 +278,9 @@ func TestStatus(t *testing.T) {
 			Address: "de1.example.com:443", LatencyMS: 85, LatencyAt: 1760000000, DownloadBPS: 48300000,
 			UploadBPS: 9100000, Country: "DE", IPOut: "203.0.113.7", TrafficUp: 1048576,
 			TrafficDown: 73400320, Running: true},
-		Tun:           true,
-		Route:         throne.Route{ID: 1, Name: "Default", Active: true},
+		Tun: true,
+		// A Throne without group routing leaves source_group_id out.
+		Route:         throne.Route{ID: 1, Name: "Default", Active: true, SourceGroupID: -1},
 		KillSwitch:    "off",
 		Core:          true,
 		Inbound:       throne.Inbound{Enabled: true, Address: "127.0.0.1", Port: 2080},

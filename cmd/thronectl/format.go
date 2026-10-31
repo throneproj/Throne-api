@@ -102,17 +102,24 @@ func writeGroups(w io.Writer, groups []throne.Group) {
 		fmt.Fprintln(w, "No groups.")
 		return
 	}
-	fmt.Fprintln(w, "ID\tNAME\tPROFILES\tSUBSCRIPTION")
+	fmt.Fprintln(w, "ID\tNAME\tPROFILES\tROUTE\tSUBSCRIPTION")
 	for _, g := range groups {
 		name := clean(g.Name)
 		if g.Archived {
 			name += " (archived)"
 		}
+		route := "active"
+		if g.RouteID >= 0 {
+			route = strconv.Itoa(g.RouteID)
+		}
 		sub := "-"
 		if g.Subscription {
 			sub = "updated " + when(g.UpdatedAt)
+			if g.ImportRoute {
+				sub += ", imports its routing"
+			}
 		}
-		fmt.Fprintf(w, "%d\t%s\t%d\t%s\n", g.ID, name, g.ProfileCount, sub)
+		fmt.Fprintf(w, "%d\t%s\t%d\t%s\t%s\n", g.ID, name, g.ProfileCount, route, sub)
 	}
 }
 
@@ -144,7 +151,14 @@ func writeRoutes(w io.Writer, routes []throne.Route) {
 		if r.Active {
 			mark = "*"
 		}
-		fmt.Fprintf(w, "%s\t%d\t%s\n", mark, r.ID, clean(r.Name))
+		name := clean(r.Name)
+		if r.InUse && !r.Active {
+			name += " (in use: the running profile's group uses it)"
+		}
+		if r.SourceGroupID >= 0 {
+			name += fmt.Sprintf(" (from subscription group %d)", r.SourceGroupID)
+		}
+		fmt.Fprintf(w, "%s\t%d\t%s\n", mark, r.ID, name)
 	}
 }
 

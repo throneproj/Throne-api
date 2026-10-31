@@ -204,7 +204,8 @@ func (a api) Routes(ctx context.Context) ([]Route, error) {
 }
 
 // SetRoute makes a routing profile active (PUT /v1/routes/active) and returns the
-// Status. A running profile restarts to apply it, which SetRoute waits for like Connect.
+// Status. A running profile restarts to apply it, which SetRoute waits for like Connect,
+// unless its group uses its own routing profile.
 func (a api) SetRoute(ctx context.Context, id int, opts ...Option) (*Status, error) {
 	return a.change(ctx, "PUT", "/v1/routes/active", map[string]any{"id": id}, collect(opts))
 }

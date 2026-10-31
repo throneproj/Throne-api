@@ -273,7 +273,28 @@ func (s *Server) view(p *throne.Profile) throne.Profile {
 
 func (s *Server) groupView(g *group) throne.Group {
 	return throne.Group{ID: g.id, Name: g.name, Subscription: g.url != "", Archived: g.archived,
-		ProfileCount: len(g.profiles), UpdatedAt: g.updatedAt}
+		ProfileCount: len(g.profiles), UpdatedAt: g.updatedAt, RouteID: g.routeID, ImportRoute: g.url != "" && g.importRoute}
+}
+
+func (s *Server) hasRoute(id int) bool {
+	return slices.ContainsFunc(s.routes, func(rt throne.Route) bool { return rt.ID == id })
+}
+
+// routeInUse is the routing profile the running profile's group chose, else the active one;
+// s.mu is held.
+func (s *Server) routeInUse() int {
+	if p := s.profiles[s.running]; p != nil && s.state == "running" {
+		if g := s.group(p.Group); g != nil && g.routeID >= 0 && s.hasRoute(g.routeID) {
+			return g.routeID
+		}
+	}
+	return s.activeRoute
+}
+
+func (s *Server) routeView(rt throne.Route) throne.Route {
+	rt.Active = rt.ID == s.activeRoute
+	rt.InUse = rt.ID == s.routeInUse()
+	return rt
 }
 
 func (s *Server) status() map[string]any {
@@ -281,9 +302,10 @@ func (s *Server) status() map[string]any {
 	if p := s.profiles[s.running]; p != nil && s.state == "running" {
 		profile = s.view(p)
 	}
+	inUse := s.routeInUse()
 	for _, rt := range s.routes {
-		if rt.ID == s.activeRoute {
-			route = throne.Route{ID: rt.ID, Name: rt.Name, Active: true}
+		if rt.ID == inUse {
+			route = s.routeView(rt)
 		}
 	}
 	return map[string]any{
@@ -584,7 +606,7 @@ func (s *Server) getRoutes(_ context.Context, _ *request) *response {
 	defer s.mu.Unlock()
 	routes := []throne.Route{}
 	for _, rt := range s.routes {
-		routes = append(routes, throne.Route{ID: rt.ID, Name: rt.Name, Active: rt.ID == s.activeRoute})
+		routes = append(routes, s.routeView(rt))
 	}
 	return ok(map[string]any{"routes": routes})
 }
@@ -612,9 +634,13 @@ func (s *Server) setRoute(ctx context.Context, r *request) *response {
 	case s.change != nil:
 		return busy("A profile is starting or stopping")
 	}
+	before := s.routeInUse()
 	s.activeRoute = id
 	s.logf("[Throne] Routing profile %s is active", s.routes[i].Name)
 	s.bump(throne.TopicStatus)
+	if s.routeInUse() == before {
+		return ok(s.status())
+	}
 	if o := s.restartRunning(); o != nil {
 		return s.waited(ctx, o, wait, func() any { return s.status() })
 	}
@@ -1169,6 +1195,14 @@ func (s *Server) addGroupRequest(ctx context.Context, r *request) *response {
 	if bad != nil {
 		return bad
 	}
+	routeID, hasRoute, bad := intField(r.fields, "route_id")
+	if bad != nil {
+		return bad
+	}
+	importRoute, bad := boolField(r.fields, "import_route", false)
+	if bad != nil {
+		return bad
+	}
 	wait, bad := waitTime(r.fields, 60*time.Second)
 	switch {
 	case bad != nil:
@@ -1177,11 +1211,21 @@ func (s *Server) addGroupRequest(ctx context.Context, r *request) *response {
 		return badRequest("name is missing")
 	case link != "" && httpURL(link) != "":
 		return badRequest("url must be an http or https URL")
+	case hasRoute && routeID < -1:
+		return badRequest("route_id must be -1 or a routing profile id")
+	case importRoute && link == "":
+		return badRequest("Only a subscription group can import its routing profile")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !hasRoute {
+		routeID = -1
+	} else if routeID >= 0 && !s.hasRoute(routeID) {
+		return notFound("Unknown routing profile %d", routeID)
+	}
 	g := s.addGroup(name, link)
 	g.autoUpdate = autoUpdate
+	g.routeID, g.importRoute = routeID, importRoute
 	s.logf("[Throne] Added the group %s", name)
 	s.bump(throne.TopicGroups)
 	if link == "" || !update {

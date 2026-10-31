@@ -1,6 +1,9 @@
 package throne
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Profile is a Throne profile. It never carries credentials or outbound configuration.
 type Profile struct {
@@ -42,13 +45,47 @@ type Group struct {
 	ProfileCount int    `json:"profile_count"`
 	// UpdatedAt is the last subscription update in Unix seconds, 0 without a subscription.
 	UpdatedAt int64 `json:"updated_at"`
+	// RouteID is the routing profile the group's profiles connect with, -1 when they follow
+	// the active one.
+	RouteID int `json:"route_id"`
+	// ImportRoute says whether each update of the subscription refreshes a routing profile
+	// from the one the subscription provides.
+	ImportRoute bool `json:"import_route"`
 }
 
 // Route is a routing profile.
 type Route struct {
-	ID     int    `json:"id"`
-	Name   string `json:"name"`
-	Active bool   `json:"active"`
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	// Active says whether SetRoute chose it. A group can use its own routing profile instead.
+	Active bool `json:"active"`
+	// InUse says whether the running profile connects with it; while nothing runs, whether
+	// it is Active.
+	InUse bool `json:"in_use"`
+	// SourceGroupID is the subscription group whose updates rewrite its rules, or -1.
+	SourceGroupID int `json:"source_group_id"`
+}
+
+// UnmarshalJSON reads RouteID as -1 when a Throne without group routing leaves it out.
+func (g *Group) UnmarshalJSON(data []byte) error {
+	type plain Group
+	v := plain{RouteID: -1}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*g = Group(v)
+	return nil
+}
+
+// UnmarshalJSON reads SourceGroupID as -1 when a Throne without group routing leaves it out.
+func (r *Route) UnmarshalJSON(data []byte) error {
+	type plain Route
+	v := plain{SourceGroupID: -1}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*r = Route(v)
+	return nil
 }
 
 // Values of Status.State.
@@ -78,7 +115,8 @@ type Status struct {
 	// macOS). It is nil while this Throne runs Tun itself. The text is for people and may
 	// be translated; turning Tun on meanwhile fails with CodeTunConflict.
 	TunConflict *string `json:"tun_conflict"`
-	// Route is the active routing profile.
+	// Route is the routing profile in use: the running profile's, which its group can choose,
+	// or the active one while nothing runs.
 	Route Route `json:"route"`
 	// KillSwitch is "off", "arming", "armed" or "failed".
 	KillSwitch string `json:"kill_switch"`
