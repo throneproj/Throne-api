@@ -8,7 +8,7 @@ import { plural, timeAgo, formatDate, formatDuration, escapeRegExp } from '../fo
 import { Icon } from '../components/icons.js';
 import { Loading, ErrorBox, Spinner, Menu } from '../components/common.js';
 import { Latency, Country, Speed, Traffic } from '../components/profile-bits.js';
-import { ImportDialog, GroupDialog } from './profile-dialogs.js';
+import { ImportDialog, GroupDialog, ProfileConfigDialog } from './profile-dialogs.js';
 
 const PAGE = 300;
 const NO_PROFILES = [];
@@ -64,9 +64,9 @@ function updateSummary(u) {
     .filter(Boolean).join(', ');
 }
 
-function ProfileRow({ p, checked, running, pending, onToggle, onConnect }) {
+function ProfileRow({ p, checked, running, pending, onToggle, onConnect, onEdit, editDisabled }) {
   const onRow = e => {
-    if (e.target.closest('input, button, a, label')) return;
+    if (e.target.closest('input, button, a, label, .c-act')) return;
     onConnect(p);
   };
   return html`<tr class=${`prow${running ? ' running' : ''}${checked ? ' checked' : ''}`} onClick=${onRow}>
@@ -90,6 +90,12 @@ function ProfileRow({ p, checked, running, pending, onToggle, onConnect }) {
     <td class="c-speed"><${Speed} p=${p} compact /></td>
     <td class="c-geo" title=${p.ip_out || undefined}><${Country} code=${p.country} />${p.ip_out && html` <span class="ip mono muted">${p.ip_out}</span>`}</td>
     <td class="c-traffic"><${Traffic} p=${p} compact /></td>
+    <td class="c-act">
+      <button type="button" class="icon-btn small" aria-label=${`Edit ${p.name}`} disabled=${editDisabled}
+        title=${editDisabled ? 'Needs admin rights on Throne' : 'Edit the profile'} onClick=${() => onEdit(p)}>
+        <${Icon} name="edit" size=${16} />
+      </button>
+    </td>
   </tr>`;
 }
 
@@ -161,6 +167,7 @@ export function ProfilesView() {
   const [connectingId, setConnectingId] = useState(null);
   const [updating, setUpdating] = useState(null);
   const [dialog, setDialog] = useState(null);
+  const [editing, setEditing] = useState(null);
   const lastClicked = useRef(-1);
 
   const q = filter.trim().toLowerCase();
@@ -479,11 +486,13 @@ export function ProfilesView() {
               <th class="c-speed">Speed</th>
               <th class="c-geo">Exit</th>
               <th class="c-traffic">Traffic</th>
+              <th class="c-act"><span class="sr-only">Edit</span></th>
             </tr>
           </thead>
           <tbody>
             ${visible.map(p => html`<${ProfileRow} key=${p.id} p=${p} checked=${selected.has(p.id)}
-              running=${p.id === runningId} pending=${p.id === connectingId} onToggle=${toggle} onConnect=${connect} />`)}
+              running=${p.id === runningId} pending=${p.id === connectingId} onToggle=${toggle} onConnect=${connect}
+              onEdit=${setEditing} editDisabled=${blocked || adminDenied} />`)}
           </tbody>
         </table>
       </div>`}
@@ -495,5 +504,6 @@ export function ProfilesView() {
       onDone=${() => { profilesRes.reload(); groupsRes.reload(); }} />`}
     ${(dialog === 'group' || dialog === 'subscription') && html`<${GroupDialog} subscription=${dialog === 'subscription'}
       onClose=${() => setDialog(null)} onCreated=${g => { setDialog(null); groupsRes.reload(); if (g) selectGroup(g.id); }} />`}
+    ${editing && html`<${ProfileConfigDialog} profile=${editing} onClose=${() => setEditing(null)} />`}
   </div>`;
 }

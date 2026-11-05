@@ -214,7 +214,7 @@ export function useNow(ms = 1000, enabled = true) {
   return now;
 }
 
-export const ROUTES = ['status', 'profiles', 'traffic', 'logs', 'settings', 'backup', 'system'];
+export const ROUTES = ['status', 'profiles', 'routing', 'traffic', 'connections', 'logs', 'settings', 'backup', 'system'];
 
 function readRoute() {
   const m = /^#\/([a-z]+)/.exec(location.hash);

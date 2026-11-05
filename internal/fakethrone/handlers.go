@@ -37,12 +37,24 @@ var routes = []route{
 	{"GET", "/v1/profiles", (*Server).getProfiles},
 	{"DELETE", "/v1/profiles", (*Server).deleteProfiles},
 	{"GET", "/v1/profiles/{id}", (*Server).getProfile},
+	{"GET", "/v1/profiles/{id}/config", (*Server).getProfileConfig},
+	{"PUT", "/v1/profiles/{id}/config", (*Server).putProfileConfig},
 	{"POST", "/v1/import", (*Server).importProfiles},
 	{"PUT", "/v1/connection", (*Server).connect},
 	{"DELETE", "/v1/connection", (*Server).disconnect},
 	{"PUT", "/v1/modes", (*Server).setModes},
 	{"GET", "/v1/routes", (*Server).getRoutes},
+	{"POST", "/v1/routes", (*Server).postRoute},
 	{"PUT", "/v1/routes/active", (*Server).setRoute},
+	{"GET", "/v1/routes/schema", (*Server).getRouteSchema},
+	{"GET", "/v1/routes/{id}", (*Server).getRoute},
+	{"PUT", "/v1/routes/{id}", (*Server).putRoute},
+	{"DELETE", "/v1/routes/{id}", (*Server).deleteRoute},
+	{"GET", "/v1/warp", (*Server).getWarp},
+	{"PUT", "/v1/warp", (*Server).putWarp},
+	{"POST", "/v1/warp/register", (*Server).registerWarp},
+	{"GET", "/v1/connections", (*Server).getConnections},
+	{"DELETE", "/v1/connections", (*Server).closeConnections},
 	{"POST", "/v1/tests", (*Server).startTest},
 	{"GET", "/v1/tests", (*Server).getJobs},
 	{"GET", "/v1/tests/{id}", (*Server).getJob},
@@ -294,6 +306,9 @@ func (s *Server) routeInUse() int {
 func (s *Server) routeView(rt throne.Route) throne.Route {
 	rt.Active = rt.ID == s.activeRoute
 	rt.InUse = rt.ID == s.routeInUse()
+	if d := s.routeData[rt.ID]; d != nil {
+		rt.Kind = d.kind
+	}
 	return rt
 }
 

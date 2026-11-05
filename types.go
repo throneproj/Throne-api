@@ -64,6 +64,8 @@ type Route struct {
 	InUse bool `json:"in_use"`
 	// SourceGroupID is the subscription group whose updates rewrite its rules, or -1.
 	SourceGroupID int `json:"source_group_id"`
+	// Kind is RouteKindRules, RouteKindRaw or RouteKindRemote; "" from an older Throne.
+	Kind string `json:"kind,omitempty"`
 }
 
 // UnmarshalJSON reads RouteID as -1 when a Throne without group routing leaves it out.
@@ -86,6 +88,152 @@ func (r *Route) UnmarshalJSON(data []byte) error {
 	}
 	*r = Route(v)
 	return nil
+}
+
+// Kinds of routing profile: RouteDetail.Kind.
+const (
+	RouteKindRules  = "rules"  // structured rules
+	RouteKindRaw    = "raw"    // a route configuration written as JSON, RawRoute
+	RouteKindRemote = "remote" // structured rules that Throne downloads from RemoteURL
+)
+
+// Outbound numbers: where a rule, or RouteDetail.DefaultOutbound, sends traffic. 0 and
+// above is the ID of a profile.
+const (
+	OutboundProxy      = -1 // the running profile
+	OutboundDirect     = -2
+	OutboundBlock      = -3
+	OutboundWarpBypass = -5
+)
+
+// Values of RouteRule.Type besides the simple rule types, such as
+// "simple_address_proxy", that RouteSchema lists.
+const (
+	RuleCustom   = "custom"
+	RuleEndpoint = "endpoint_preferred_by" // made for each of RouteDetail.Endpoints
+)
+
+// Values of RuleAttribute.Kind, which say how the value of the attribute is written.
+const (
+	AttrBool     = "bool"     // true or false
+	AttrSelect   = "select"   // a string, one of Values
+	AttrOutbound = "outbound" // an outbound number, such as OutboundDirect
+	AttrList     = "list"     // a list of strings
+	AttrText     = "text"     // a string
+)
+
+// RouteDetail is a routing profile with its rules and settings.
+type RouteDetail struct {
+	// ID, Name, Active, InUse and SourceGroupID are those of the Route.
+	ID            int    `json:"id"`
+	Name          string `json:"name"`
+	Active        bool   `json:"active"`
+	InUse         bool   `json:"in_use"`
+	SourceGroupID int    `json:"source_group_id"`
+	// Kind is RouteKindRules, RouteKindRaw or RouteKindRemote. It never changes.
+	Kind string `json:"kind"`
+	// DefaultOutbound is where traffic that no rule matches goes: OutboundProxy,
+	// OutboundDirect, OutboundBlock or OutboundWarpBypass.
+	DefaultOutbound int `json:"default_outbound"`
+	// Rules are the rules in order.
+	Rules []RouteRule `json:"rules"`
+	// Simple are the simple rules as Throne's window shows them.
+	Simple SimpleRules `json:"simple"`
+	// RawRoute is the configuration of a RouteKindRaw profile, a JSON object as text.
+	// PreventModifications makes Throne use it exactly as written.
+	RawRoute             string `json:"raw_route"`
+	PreventModifications bool   `json:"prevent_modifications"`
+	// RemoteURL is where Throne downloads the rules of a RouteKindRemote profile, and
+	// AutoUpdate says whether it does so in its automatic updates. RemoteUpdatedAt is the
+	// last download in Unix seconds.
+	RemoteURL       string `json:"remote_url"`
+	AutoUpdate      bool   `json:"auto_update"`
+	RemoteUpdatedAt int64  `json:"remote_updated_at"`
+	// Endpoints are the OpenVPN and OpenConnect profiles, and chains that exit through one,
+	// that run alongside the routing profile, and InnerHopEndpoints those of them whose inner
+	// hops are routable too.
+	Endpoints         []int `json:"endpoints"`
+	InnerHopEndpoints []int `json:"inner_hop_endpoints"`
+	// CustomDNS says whether the routing profile uses DNS instead of Throne's DNS
+	// settings. DNS holds its own settings, or Throne's when it has none stored.
+	CustomDNS bool      `json:"custom_dns"`
+	DNS       *RouteDNS `json:"dns"`
+}
+
+// RouteRule is a rule of a routing profile.
+type RouteRule struct {
+	// Type is RuleCustom, RuleEndpoint or a simple rule type.
+	Type string `json:"type"`
+	Name string `json:"name"`
+	// Disabled says that Throne keeps the rule but leaves it out of the configuration.
+	Disabled bool `json:"disabled"`
+	// Attributes are the values that are not at their default, by attribute name, with
+	// "action" always and "outbound" when the action uses it. A value decodes by the Kind
+	// of its attribute: []any of strings for AttrList, bool for AttrBool, float64 for
+	// AttrOutbound and string for the others.
+	Attributes map[string]any `json:"attributes"`
+}
+
+// SimpleRules are the simple rules of a routing profile as Throne's window shows them: an
+// entry per line, such as "suffix:example.com".
+type SimpleRules struct {
+	Proxy      string `json:"proxy"`
+	Direct     string `json:"direct"`
+	Block      string `json:"block"`
+	WarpBypass string `json:"warp_bypass"`
+}
+
+// RouteDNS are the DNS settings of a routing profile.
+type RouteDNS struct {
+	RemoteDNS            string `json:"remote_dns"`
+	RemoteDNSDisableIPv6 bool   `json:"remote_dns_disable_ipv6"`
+	DirectDNS            string `json:"direct_dns"`
+	DirectDNSDisableIPv6 bool   `json:"direct_dns_disable_ipv6"`
+	// DNSFinalOut is the server for names that no DNS rule matches: "remote" or "direct".
+	DNSFinalOut       string `json:"dns_final_out"`
+	EnableDNSRouting  bool   `json:"enable_dns_routing"`
+	FakeDNS           bool   `json:"fake_dns"`
+	FakeIPDisableIPv6 bool   `json:"fakeip_disable_ipv6"`
+}
+
+// RouteSchema describes the rules of routing profiles.
+type RouteSchema struct {
+	// Attributes are the attributes a rule takes on Throne's system, in the order of
+	// Throne's rule editor.
+	Attributes []RuleAttribute `json:"attributes"`
+	// RuleTypes are the values of RouteRule.Type.
+	RuleTypes []string `json:"rule_types"`
+	// Outbounds are the outbounds that are not profiles, such as OutboundProxy.
+	Outbounds []RouteOutbound `json:"outbounds"`
+}
+
+// RuleAttribute describes an attribute of a rule.
+type RuleAttribute struct {
+	Name string `json:"name"`
+	// Kind is AttrBool, AttrSelect, AttrOutbound, AttrList or AttrText.
+	Kind string `json:"kind"`
+	// Match says whether the attribute selects connections; the others shape the action.
+	Match bool `json:"match"`
+	// Values are the choices of an AttrSelect attribute.
+	Values []string `json:"values"`
+	// Actions are the actions the attribute applies to; empty means every action.
+	Actions []string `json:"actions"`
+}
+
+// RouteOutbound is an outbound that is not a profile.
+type RouteOutbound struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+}
+
+// RouteChange is the outcome of AddRoute and UpdateRoute.
+type RouteChange struct {
+	Route RouteDetail `json:"route"`
+	// Warnings are problems that did not stop the change, a line each.
+	Warnings []string `json:"warnings"`
+	// RestartNeeded says that changes wait for the running profile to restart, as
+	// Status.RestartNeeded does.
+	RestartNeeded bool `json:"restart_needed"`
 }
 
 // Values of Status.State.
@@ -262,6 +410,87 @@ type TrafficItem struct {
 	Down int64  `json:"down"`
 }
 
+// Connections are the connections of the running profile, as the core tracks them.
+type Connections struct {
+	// Running says whether a profile runs; without one, Connections is empty.
+	Running bool `json:"running"`
+	// UpdatedAt is when Throne took the list, in milliseconds since the epoch; 0 before it
+	// took one.
+	UpdatedAt int64 `json:"updated_at"`
+	// Connections are the open ones, then the closed ones, each newest first; at most 2000.
+	Connections []Connection `json:"connections"`
+}
+
+// Connection is a connection the core tracks. Its times are in milliseconds since the
+// epoch.
+type Connection struct {
+	ID string `json:"id"`
+	// CreatedAt is when the connection opened, and ClosedAt when it closed, 0 while open.
+	CreatedAt int64 `json:"created_at"`
+	ClosedAt  int64 `json:"closed_at"`
+	// Network is the network, such as "tcp", and Protocol the protocol, such as "tls".
+	Network  string `json:"network"`
+	Protocol string `json:"protocol"`
+	// Source is the client's address, ip:port, or "" when unknown. SourceName is what
+	// Throne shows: "Local" for Throne's device, else the client's IP address.
+	Source     string `json:"source"`
+	SourceName string `json:"source_name"`
+	// Destination is the address the connection goes to, ip:port, and Domain its domain.
+	Destination string `json:"destination"`
+	Domain      string `json:"domain"`
+	// Process and ProcessPath are the program that opened the connection.
+	Process     string `json:"process"`
+	ProcessPath string `json:"process_path"`
+	// Outbound is the name of the profile behind OutboundTag, else the tag.
+	Outbound    string `json:"outbound"`
+	OutboundTag string `json:"outbound_tag"`
+	// Rule is the routing rule that matched, "" when the final outbound routed the
+	// connection; RuleItem is the part of the rule that matched, "" when the core could
+	// not tell.
+	Rule     string `json:"rule"`
+	RuleItem string `json:"rule_item"`
+	// Upload and Download are bytes sent and received, and UploadSpeed and DownloadSpeed
+	// bytes per second, 0 once the connection closed.
+	Upload        int64 `json:"upload"`
+	Download      int64 `json:"download"`
+	UploadSpeed   int64 `json:"upload_speed"`
+	DownloadSpeed int64 `json:"download_speed"`
+}
+
+// Modes of WARP: Warp.Mode.
+const (
+	WarpWireGuard = "wireguard"
+	WarpAmnezia   = "amnezia" // AmneziaWG
+	WarpMASQUE    = "masque"
+)
+
+// Warp is the state of Throne's built-in Cloudflare WARP. It holds no keys.
+type Warp struct {
+	// Enabled is Enable Warp in Throne's routing settings.
+	Enabled bool `json:"enabled"`
+	// Mode is WarpWireGuard, WarpAmnezia or WarpMASQUE.
+	Mode string `json:"mode"`
+	// Configured says whether Mode has a registered device, which Enabled needs.
+	Configured bool `json:"configured"`
+	// Endpoint is the WARP server of Mode, and Addresses the addresses of its interface.
+	Endpoint  string   `json:"endpoint"`
+	Addresses []string `json:"addresses"`
+	// TermsAccepted says whether Cloudflare's WARP terms, at TermsURL, were accepted;
+	// registering a device needs that.
+	TermsAccepted bool   `json:"terms_accepted"`
+	TermsURL      string `json:"terms_url"`
+	// Registering says whether a RegisterWarp is under way.
+	Registering bool `json:"registering"`
+}
+
+// WarpChange is the outcome of SetWarp and RegisterWarp.
+type WarpChange struct {
+	Warp
+	// RestartNeeded says that changes wait for the running profile to restart, as
+	// Status.RestartNeeded does.
+	RestartNeeded bool `json:"restart_needed"`
+}
+
 // Values of State in the response of a management request whose wait ended first; the
 // work carries on in Throne. DeleteGroup and DeleteProfiles use StateStopping.
 const (
@@ -365,6 +594,32 @@ type SettingsChange struct {
 	// Changed names the settings whose values changed, sorted.
 	Changed []string `json:"changed"`
 	// RestartNeeded says that a change waits for the running profile to restart.
+	RestartNeeded bool `json:"restart_needed"`
+}
+
+// ProfileConfig is the configuration of a profile, credentials included.
+type ProfileConfig struct {
+	ID   int    `json:"id"`
+	Type string `json:"type"`
+	Name string `json:"name"`
+	// Outbound is the configuration as Throne stores it: a JSON object whose fields depend
+	// on Type.
+	Outbound json.RawMessage `json:"outbound"`
+	// Link is the profile's share link, "" for a type without one.
+	Link string `json:"link"`
+	// Editable says whether SetProfileConfig may change the profile; Reason says why not.
+	Editable bool   `json:"editable"`
+	Reason   string `json:"reason"`
+}
+
+// ProfileChange is the outcome of SetProfileConfig.
+type ProfileChange struct {
+	Profile Profile `json:"profile"`
+	// Warnings are problems of the configuration that did not stop the change, each
+	// "field: message".
+	Warnings []string `json:"warnings"`
+	// RestartNeeded says that changes wait for the running profile to restart, as
+	// Status.RestartNeeded does.
 	RestartNeeded bool `json:"restart_needed"`
 }
 

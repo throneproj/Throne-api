@@ -44,6 +44,10 @@ const MESSAGES = {
   internal: 'Something failed inside Throne.',
   fetch_failed: 'A download failed.',
   core_unavailable: "Throne's core process is not reachable.",
+  not_editable: "Only Throne's window can edit this profile.",
+  last_route: 'Throne keeps at least one routing profile.',
+  warp_not_configured: 'WARP has no identity for this mode yet. Register one first.',
+  warp_failed: 'Registering with Cloudflare failed.',
   exiting: 'Throne is shutting down.',
   restarting: 'Throne is restarting.',
   starting: 'Throne is still starting. Try again in a moment.',
@@ -55,7 +59,10 @@ export function describeError(err) {
   const detail = String(err.detail || '').trim();
   const title = MESSAGES[code];
   if (title) return { title, detail: detail && detail !== code && detail !== title ? detail : '' };
-  if (detail) return { title: detail, detail: '' };
+  if (detail) {
+    const nl = detail.indexOf('\n');
+    return nl < 0 ? { title: detail, detail: '' } : { title: detail.slice(0, nl), detail: detail.slice(nl + 1).trim() };
+  }
   if (err.status) return { title: `The request failed (${code || `HTTP ${err.status}`}).`, detail: '' };
   return { title: String(err.message || err), detail: '' };
 }
@@ -94,4 +101,4 @@ export const KILL_SWITCH_ERRORS = {
   internal: 'An internal error stopped it.',
 };
 
-export const ADMIN_HELP = "The web UI's connection to Throne lacks admin rights, so Throne refuses imports, deletions, settings changes, backups, restores, the log, restart and shut down. Start headless Throne with --api-admin-lan (in Throne with a window: “Allow management from the local network” in its API settings), or run thronectl web on Throne's own machine.";
+export const ADMIN_HELP = "The web UI's connection to Throne lacks admin rights, so Throne refuses imports, deletions, changes to profiles, routing and settings, backups, restores, the log, the connection list, restart and shut down. Start headless Throne with --api-admin-lan (in Throne with a window: “Allow management from the local network” in its API settings), or run thronectl web on Throne's own machine.";

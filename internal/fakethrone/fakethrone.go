@@ -79,7 +79,13 @@ type Server struct {
 	nextGroup     int
 	shown         int // the group Throne shows
 	routes        []throne.Route
+	routeData     map[int]*routeData
 	activeRoute   int
+	outbounds     map[int]map[string]any // the configurations of profiles, made up when first read
+	warp          warpState
+	tracked       []*connection // the connections of the running profile
+	trackedAt     int64         // when tracked was last refreshed, in ms; 0 never
+	trackLease    time.Time     // tracked refreshes until then
 	state         string
 	running       int // the running profile, or -1
 	last          int
@@ -254,7 +260,7 @@ func (s *Server) begin() {
 	s.logWake, s.eventWake = make(chan struct{}), make(chan struct{})
 	s.jobs = nil
 	s.backups, s.uploads = map[int]*backup{}, map[int]*upload{}
-	s.change, s.geoUpdate, s.ruleSetUpdate = nil, nil, nil
+	s.change, s.geoUpdate, s.ruleSetUpdate, s.warp.registering = nil, nil, nil, nil
 	for _, g := range s.groups {
 		g.update = nil
 	}
@@ -763,6 +769,9 @@ func (s *Server) seed() {
 
 	s.routes = []throne.Route{{ID: 0, Name: "Default", SourceGroupID: -1}, {ID: 1, Name: "Bypass LAN and China", SourceGroupID: -1},
 		{ID: 2, Name: "Global", SourceGroupID: -1}, {ID: 3, Name: "Iran direct", SourceGroupID: -1}}
+	s.seedRoutes(work.profiles[0])
+	s.outbounds = map[int]map[string]any{}
+	s.warp = warpState{mode: throne.WarpWireGuard}
 	s.settings = map[string]any{
 		"remember_enable": true, "log_level": "info", "xray_log_level": "warning", "inbound_enabled": true,
 		"inbound_address": "127.0.0.1", "inbound_port": 2080, "test_url": "https://www.gstatic.com/generate_204",
@@ -799,6 +808,8 @@ func (s *Server) seed() {
 
 	// Like headless Throne, the fake resumes the profile that ran.
 	s.state, s.running, s.last = "running", provider.profiles[2], provider.profiles[2]
+	// Added last, so that the data of every seed stays as it was.
+	s.addProfile(work, entry{home: "US", profile: throne.Profile{Name: "Local tool (Extra Core)", Type: "extracore", Address: "127.0.0.1:10808"}})
 }
 
 // history makes up the hourly traffic of the last 30 days, busier in the evening.
@@ -837,7 +848,11 @@ func (s *Server) flow() {
 	p := s.profiles[s.running]
 	if s.state != "running" || s.down != "" || p == nil {
 		s.live = throne.LiveStats{}
+		s.tracked, s.trackedAt = nil, 0
 		return
+	}
+	if time.Now().Before(s.trackLease) {
+		s.track(p)
 	}
 	walk := func(v, hi int64) int64 {
 		if s.rnd.IntN(12) == 0 {

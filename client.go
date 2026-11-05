@@ -4,10 +4,11 @@
 // The requests are specified in spec/api.md and the wire protocol in spec/protocol.md
 // of this repository.
 //
-// Admin requests, which import, delete, change settings, back up, restore, restart, shut
-// down and read the log, are answered only from Throne's own device, unless Throne allows management
-// from the local network; from elsewhere they fail with CodeForbidden. Their
-// documentation says that they are admin requests.
+// Admin requests, which import, edit, delete, change settings and WARP, back up, restore,
+// restart, shut down, and read the log, the connections and profile configurations, are
+// answered only from Throne's own device, unless Throne allows management from the local
+// network; from elsewhere they fail with CodeForbidden. Their documentation says that they
+// are admin requests.
 package throne
 
 import (

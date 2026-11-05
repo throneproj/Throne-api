@@ -1,4 +1,4 @@
-import { html } from '../ui.js';
+import { html, useEffect, useRef } from '../ui.js';
 import { useStore, useBlocked, useNow } from '../store.js';
 import { actions, dismissAdminNotice, dismissRestartWait } from '../session.js';
 import { STATE_LABELS, DEGRADED, KILL_SWITCH_ERRORS, ADMIN_HELP } from '../errors.js';
@@ -9,7 +9,9 @@ import { Spinner } from './common.js';
 export const NAV_ITEMS = [
   { id: 'status', label: 'Status', icon: 'activity' },
   { id: 'profiles', label: 'Profiles', icon: 'list' },
+  { id: 'routing', label: 'Routing', icon: 'split' },
   { id: 'traffic', label: 'Traffic', icon: 'chart' },
+  { id: 'connections', label: 'Connections', icon: 'swap' },
   { id: 'logs', label: 'Logs', icon: 'terminal' },
   { id: 'settings', label: 'Settings', icon: 'sliders' },
   { id: 'backup', label: 'Backup', icon: 'archive' },
@@ -68,8 +70,13 @@ export function Header() {
 }
 
 export function Nav({ route }) {
+  const list = useRef(null);
+  useEffect(() => {
+    const el = list.current && list.current.querySelector('[aria-current="page"]');
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [route]);
   return html`<nav class="nav" aria-label="Main">
-    <ul>
+    <ul ref=${list}>
       ${NAV_ITEMS.map(it => html`<li key=${it.id}>
         <a href=${`#/${it.id}`} class="nav-link" aria-current=${route === it.id ? 'page' : undefined}>
           <${Icon} name=${it.icon} size=${20} />

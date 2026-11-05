@@ -8,6 +8,8 @@ import { LoginView } from './views/login.js';
 import { StatusView } from './views/status.js';
 import { ProfilesView } from './views/profiles.js';
 import { TrafficView } from './views/traffic.js';
+import { ConnectionsView } from './views/connections.js';
+import { RoutingView } from './views/routing.js';
 import { LogsView } from './views/logs.js';
 import { SettingsView } from './views/settings.js';
 import { BackupView } from './views/backup.js';
@@ -16,7 +18,9 @@ import { SystemView } from './views/system.js';
 const VIEWS = {
   status: StatusView,
   profiles: ProfilesView,
+  routing: RoutingView,
   traffic: TrafficView,
+  connections: ConnectionsView,
   logs: LogsView,
   settings: SettingsView,
   backup: BackupView,

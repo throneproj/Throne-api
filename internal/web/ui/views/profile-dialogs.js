@@ -1,8 +1,9 @@
-import { html, useState } from '../ui.js';
+import { html, useState, useEffect } from '../ui.js';
 import { api } from '../client.js';
-import { toast } from '../store.js';
+import { toast, useResource } from '../store.js';
+import { loadStatus } from '../session.js';
 import { plural, formatBytes } from '../format.js';
-import { Dialog, ErrorBox, Spinner } from '../components/common.js';
+import { Dialog, ErrorBox, Spinner, Loading, Notice, CopyButton } from '../components/common.js';
 
 const MAX_IMPORT_BYTES = 768 * 1024;
 
@@ -127,6 +128,96 @@ export function ImportDialog({ groups, groupId, onClose, onDone }) {
         </div>
         <${ErrorBox} error=${error} />
       </form>`}
+  <//>`;
+}
+
+function parseOutbound(text) {
+  try {
+    const v = JSON.parse(text);
+    return v && typeof v === 'object' && !Array.isArray(v) ? { value: v, error: '' } : { value: null, error: 'The outbound must be a JSON object.' };
+  } catch (e) {
+    return { value: null, error: `Not valid JSON: ${e.message}` };
+  }
+}
+
+export function ProfileConfigDialog({ profile, onClose }) {
+  const res = useResource(() => api.get(`api/v1/profiles/${profile.id}/config`), { deps: [profile.id] });
+  const cfg = res.data;
+  const [text, setText] = useState(null);
+  const [link, setLink] = useState('');
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!cfg) return;
+    setText(JSON.stringify(cfg.outbound, null, 2));
+    setLink(cfg.link || '');
+  }, [cfg]);
+
+  const editable = !!(cfg && cfg.editable);
+  const original = cfg ? JSON.stringify(cfg.outbound, null, 2) : '';
+  const parsed = text === null ? { value: null, error: '' } : parseOutbound(text);
+  const textChanged = text !== null && text !== original;
+  const linkChanged = !!cfg && link.trim() !== '' && link.trim() !== (cfg.link || '');
+
+  const save = async body => {
+    setBusy('link' in body ? 'link' : 'json');
+    setError(null);
+    try {
+      const r = await api.put(`api/v1/profiles/${profile.id}/config`, body);
+      const warnings = r.warnings || [];
+      const later = r.restart_needed ? ' It applies when the running profile restarts.' : '';
+      toast(`Saved ${(r.profile && r.profile.name) || profile.name}.${later}`, {
+        kind: warnings.length ? 'info' : 'success',
+        detail: warnings.length ? `${plural(warnings.length, 'warning')}:\n${warnings.join('\n')}` : '',
+      });
+      if (r.restart_needed) loadStatus();
+      onClose();
+    } catch (err) {
+      setError(err);
+      setBusy(null);
+    }
+  };
+
+  const submit = e => {
+    e.preventDefault();
+    if (editable && textChanged && parsed.value && !busy) save({ outbound: parsed.value });
+  };
+
+  const footer = editable
+    ? html`<button type="button" class="btn" onClick=${onClose} disabled=${!!busy}>Cancel</button>
+        <button type="submit" form="profile-config-form" class="btn primary" disabled=${!textChanged || !parsed.value || !!busy}>
+          ${busy === 'json' ? html`<${Spinner} small /> Saving…` : 'Save'}
+        </button>`
+    : html`<button type="button" class="btn primary" onClick=${onClose}>Close</button>`;
+
+  return html`<${Dialog} title=${`Edit ${profile.name || 'profile'}`} onClose=${onClose} footer=${footer} busy=${!!busy} wide>
+    ${!cfg && (res.error ? html`<${ErrorBox} error=${res.error} onRetry=${res.reload} />` : html`<${Loading} />`)}
+    ${cfg && text !== null && html`<form id="profile-config-form" onSubmit=${submit}>
+      ${!editable && html`<${Notice} kind="info" icon="shield">${cfg.reason || "Only Throne's window can edit this profile."}<//>`}
+      <div class=${`field${parsed.error ? ' invalid' : ''}`}>
+        <label for="profile-config-json">Outbound (${cfg.type})</label>
+        <textarea id="profile-config-json" class="input mono" rows="14" spellcheck=${false} value=${text} readOnly=${!editable}
+          aria-describedby=${parsed.error ? 'profile-config-json-err' : 'profile-config-json-help'} aria-invalid=${parsed.error ? 'true' : undefined}
+          onInput=${e => setText(e.currentTarget.value)}></textarea>
+        ${parsed.error
+          ? html`<small id="profile-config-json-err" class="field-error">${parsed.error}</small>`
+          : html`<small id="profile-config-json-help" class="field-help">The profile as Throne stores it. Its type stays ${cfg.type}.</small>`}
+      </div>
+      <div class="field">
+        <label for="profile-config-link">Share link</label>
+        <div class="input-row">
+          <input id="profile-config-link" class="input mono" type="text" spellcheck=${false} autocomplete="off" value=${link}
+            readOnly=${!editable} placeholder=${cfg.link ? '' : 'This type has no share link'} onInput=${e => setLink(e.currentTarget.value)} />
+          ${link && html`<${CopyButton} text=${link} label="Copy the link" />`}
+          ${editable && html`<button type="button" class="btn" disabled=${!linkChanged || !!busy} onClick=${() => save({ link: link.trim() })}>
+            ${busy === 'link' ? html`<${Spinner} small />` : null}Replace from link
+          </button>`}
+        </div>
+        ${editable && html`<small class="field-help">Paste another ${cfg.type} link and replace the profile with it.</small>`}
+      </div>
+      <${ErrorBox} error=${error} />
+    </form>`}
   <//>`;
 }
 

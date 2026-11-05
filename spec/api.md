@@ -4,20 +4,25 @@ The requests Throne answers over the [wire protocol](protocol.md). Each request 
 `method` and a `path`, with an optional `query` and `body`, exactly as protocol.md describes.
 
 The API controls the connection, Tun and system proxy modes, the routing profile and tests,
-and it reads profiles, statistics and Throne's log, and tells clients what changed. Its
-management requests also import profiles, add, update and delete groups and subscriptions,
-delete profiles, change a chosen set of settings, update rule-sets and geo files, back up
-and restore Throne's data, and restart or shut down Throne. Most of them are
-[admin requests](#scope), which Throne answers only from its own device unless it is set to
-allow them from the local network.
+and it reads profiles, routing profiles, statistics and Throne's log, and tells clients what
+changed. Its management requests also import profiles, add, update and delete groups and
+subscriptions, edit and delete profiles, add, edit and delete routing profiles, change a
+chosen set of settings and WARP, read and close the live connections, update rule-sets and
+geo files, back up and restore Throne's data, and restart or shut down Throne. Most of them
+are [admin requests](#scope), which Throne answers only from its own device unless it is set
+to allow them from the local network.
 
 Responses never contain profile credentials, outbound configurations or subscription URLs.
-Backups are the exception: they contain Throne's data, credentials included, in plain text.
+There are two exceptions, both admin requests: backups contain Throne's data, credentials
+included, in plain text, and so does the configuration of a profile
+([`GET /v1/profiles/{id}/config`](#get-v1profilesidconfig)).
 
 ## Conventions
 
-- IDs are integers. `-1` means "none".
-- Times are Unix seconds. `0` means "never" or "unknown".
+- IDs are integers, except those of [connections](#connection), which are strings. `-1`
+  means "none".
+- Times are Unix seconds, except in [connections](#connection), which count milliseconds.
+  `0` means "never" or "unknown".
 - Byte counts are integers. Live rates are bytes per second; speed-test results are bits
   per second.
 - Lists come wrapped in an object, such as `{"profiles": [...]}`, so fields can be added
@@ -45,8 +50,8 @@ that change the connection then respond with the current [Status](#status); poll
 stopping when nothing runs, responds 200 either way.
 
 While a profile is starting or stopping, requests that would restart it respond `busy`, and
-so do the requests that delete groups or profiles, change settings, apply a restore, or
-restart or shut down Throne.
+so do the requests that delete groups or profiles, edit a profile's configuration, edit or
+delete routing profiles, change settings, apply a restore, or restart or shut down Throne.
 
 ### Selecting profiles
 
@@ -64,19 +69,24 @@ selector profiles are never tested, so tests skip them.
 
 ## Scope
 
-Requests are control requests or admin requests. Admin requests read the log, import,
-delete, change settings, back up, restore, restart and shut down:
+Requests are control requests or admin requests. Admin requests read the log, the
+connections and the configurations of profiles, import, edit, delete, change settings and
+WARP, back up, restore, restart and shut down:
 
-- `GET /v1/logs`, since the log names the sites that connections went to
+- `GET /v1/logs` and `GET /v1/connections`, since they name the sites that connections
+  went to, and `DELETE /v1/connections`
 - `POST /v1/import`
 - `POST /v1/groups`, `DELETE /v1/groups/{id}`, `DELETE /v1/profiles`
-- `PUT /v1/settings`
+- `GET /v1/profiles/{id}/config`, since it holds the profile's credentials, and
+  `PUT /v1/profiles/{id}/config`
+- `POST /v1/routes`, `PUT /v1/routes/{id}`, `DELETE /v1/routes/{id}`
+- `PUT /v1/settings`, `PUT /v1/warp`, `POST /v1/warp/register`
 - every request under `/v1/backups` and `/v1/restores`
 - `POST /v1/restart`, `POST /v1/shutdown`
 
-Every other request is a control request, among them `GET /v1/settings`, `GET /v1/events`,
-the subscription updates and the rule-set and geo file updates. Throne answers control
-requests from every client it lets in.
+Every other request is a control request, among them `GET /v1/settings`, `GET /v1/warp`,
+`GET /v1/routes/{id}`, `GET /v1/events`, the subscription updates and the rule-set and geo
+file updates. Throne answers control requests from every client it lets in.
 
 Throne answers admin requests only from its own device, that is from a loopback address
 such as `127.0.0.1` or `::1`. With **Allow management from the local network** on, in the
@@ -435,7 +445,7 @@ its next start.
 ### Route
 
 ```json
-{"id": 1, "name": "Default", "active": true, "in_use": true, "source_group_id": -1}
+{"id": 1, "name": "Default", "active": true, "in_use": true, "source_group_id": -1, "kind": "rules"}
 ```
 
 | Field | |
@@ -443,6 +453,107 @@ its next start.
 | `active` | The routing profile [`PUT /v1/routes/active`](#put-v1routesactive) chose. A group can use its own instead (`route_id`) |
 | `in_use` | The running profile connects with it; while no profile runs, the same as `active` |
 | `source_group_id` | The subscription group whose updates rewrite its rules (`import_route`), or `-1`. Deleting that group deletes the routing profile; deleting the routing profile turns the group's `import_route` off |
+| `kind` | `rules`, `raw` or `remote`, as in the [Route detail](#route-detail). An older Throne leaves it out |
+
+### Route detail
+
+A routing profile with its rules and settings, as
+[`GET /v1/routes/{id}`](#get-v1routesid) returns it:
+
+```json
+{
+  "id": 1, "name": "Default", "active": true, "in_use": true, "source_group_id": -1,
+  "kind": "rules",
+  "default_outbound": -1,
+  "rules": [
+    {"type": "custom", "name": "dns-hijack", "disabled": false,
+     "attributes": {"protocol": "dns", "action": "hijack-dns"}},
+    {"type": "simple_address_proxy", "name": "Simple Address Proxy", "disabled": false,
+     "attributes": {"domain_suffix": ["example.com"], "action": "route", "outbound": -1}}
+  ],
+  "simple": {"proxy": "suffix:example.com\n", "direct": "", "block": "", "warp_bypass": ""},
+  "raw_route": "",
+  "prevent_modifications": false,
+  "remote_url": "", "auto_update": false, "remote_updated_at": 0,
+  "endpoints": [], "inner_hop_endpoints": [],
+  "custom_dns": false,
+  "dns": {"remote_dns": "https://dns.google/dns-query", "direct_dns": "localhost", "...": "..."}
+}
+```
+
+Every field is present, whatever the kind.
+
+| Field | |
+|---|---|
+| `id`, `name`, `active`, `in_use`, `source_group_id` | As in the [Route](#route) |
+| `kind` | `rules` (structured rules), `raw` (a route configuration written as JSON, `raw_route`) or `remote` (structured rules that Throne downloads from `remote_url`). It is set when the routing profile is made and never changes |
+| `default_outbound` | Where traffic that no rule matches goes: `-1`, `-2`, `-3` or `-5`, an [outbound number](#outbound-numbers) that is not a profile |
+| `rules` | The [rules](#rule), in order |
+| `simple` | The simple rules as Throne's window shows them, one entry per line, such as `suffix:example.com`: `proxy`, `direct` (bypass), `block` and `warp_bypass`. They are the entries of the simple rules in `rules` |
+| `raw_route` | The configuration of a `raw` routing profile: a JSON object, as text |
+| `prevent_modifications` | Throne uses `raw_route` exactly as written, without adding its own rules |
+| `remote_url`, `auto_update`, `remote_updated_at` | Where Throne downloads the rules of a `remote` routing profile, whether its automatic updates do so (`route_auto_update` in the [settings](#settings)), and when it last did |
+| `endpoints` | The OpenVPN and OpenConnect profiles, and chains that exit through one, that run alongside the routing profile. Throne keeps an `endpoint_preferred_by` rule for each |
+| `inner_hop_endpoints` | Those of `endpoints` whose inner hops are routable too |
+| `custom_dns` | The routing profile uses `dns` rather than Throne's DNS settings |
+| `dns` | The routing profile's own DNS settings, kept also while `custom_dns` is false; when it has none, Throne's DNS settings, which turning `custom_dns` on starts from: `remote_dns`, `direct_dns` (DNS servers, such as `https://8.8.8.8/dns-query` and `localhost`), `remote_dns_disable_ipv6`, `direct_dns_disable_ipv6`, `dns_final_out` (`remote` or `direct`: the server for names that no DNS rule matches), `enable_dns_routing`, `fake_dns`, `fakeip_disable_ipv6` |
+
+#### Outbound numbers
+
+`default_outbound` and the rule attribute `outbound` name where traffic goes: `-1` proxy
+(the running profile), `-2` direct, `-3` block, `-5` warp-bypass, and, for a rule only, `0`
+or more the profile with that id. [`GET /v1/routes/schema`](#get-v1routesschema) lists the negative
+ones with their names.
+
+### Rule
+
+A rule of a routing profile:
+
+```json
+{"type": "custom", "name": "dns-hijack", "disabled": false, "attributes": {"protocol": "dns", "action": "hijack-dns"}}
+```
+
+| Field | |
+|---|---|
+| `type` | `custom`; a simple rule type, such as `simple_address_proxy`, whose entries `simple` shows; or `endpoint_preferred_by`, the rule Throne keeps for each of `endpoints`. The [Route schema](#route-schema) lists them |
+| `name` | The rule's name |
+| `disabled` | Throne keeps the rule but leaves it out of the configuration |
+| `attributes` | The attributes whose values are not their default, by name, with `action` always and `outbound` whenever the action uses it |
+
+An attribute's value is written by its `kind` in the [Route schema](#route-schema): `list`, a
+list of strings; `bool`, `true` or `false`; `select` and `text`, a string; `outbound`, an
+[outbound number](#outbound-numbers). The attributes are those of the schema, plus
+`wifi_ssid` and `wifi_bssid` (lists), also on a system whose schema lacks them, and
+`sniffers` (a list), so that a rule read and written back loses nothing.
+
+### Route schema
+
+Describes the rules, so that a client need not know their attributes:
+
+```json
+{
+  "attributes": [
+    {"name": "domain_suffix", "kind": "list",     "match": true,  "values": [],                         "actions": []},
+    {"name": "network",       "kind": "select",   "match": true,  "values": ["", "tcp", "udp", "icmp"], "actions": []},
+    {"name": "invert",        "kind": "bool",     "match": true,  "values": [],                         "actions": []},
+    {"name": "action",        "kind": "select",   "match": false, "values": ["route", "reject", "..."], "actions": []},
+    {"name": "outbound",      "kind": "outbound", "match": false, "values": [],                         "actions": ["route", "bypass"]},
+    {"name": "method",        "kind": "select",   "match": false, "values": ["", "default", "drop", "reply"], "actions": ["reject"]}
+  ],
+  "rule_types": ["custom", "simple_address_proxy", "...", "endpoint_preferred_by"],
+  "outbounds": [{"id": -1, "name": "proxy"}, {"id": -2, "name": "direct"}, {"id": -3, "name": "block"}, {"id": -5, "name": "warp-bypass"}]
+}
+```
+
+| Field | |
+|---|---|
+| `attributes` | The attributes a rule takes on Throne's system, in the order of Throne's rule editor |
+| `attributes[].kind` | `bool`, `select` (one of `values`), `outbound` (an [outbound number](#outbound-numbers)), `list` (a list of strings) or `text` (a string) |
+| `attributes[].match` | The attribute selects connections; the others shape what the action does |
+| `attributes[].values` | The choices of a `select`, else `[]` |
+| `attributes[].actions` | The actions the attribute applies to; `[]` means every action |
+| `rule_types` | The values of a rule's `type` |
+| `outbounds` | The outbounds that are not profiles |
 
 ### Status
 
@@ -524,6 +635,78 @@ The outcome of a subscription update:
 | `kept` | Profiles the subscription no longer lists that Throne kept because they are in use, such as the running profile |
 | `error` | Why the update failed, when `ok` is false |
 
+### Connection
+
+A connection of the running profile, as the core tracks it. Its times are in milliseconds
+since the epoch.
+
+```json
+{
+  "id": "6a1f…",
+  "created_at": 1760000000000,
+  "closed_at": 0,
+  "network": "tcp",
+  "protocol": "tls",
+  "source": "192.168.1.5:51234",
+  "source_name": "Local",
+  "destination": "142.250.1.1:443",
+  "domain": "www.google.com",
+  "process": "chrome.exe",
+  "process_path": "C:\\Program Files\\Google\\Chrome\\chrome.exe",
+  "outbound": "DE Frankfurt",
+  "outbound_tag": "route-0",
+  "rule": "domain_suffix=[google.com] => route(proxy)",
+  "rule_item": "domain_suffix=google.com",
+  "upload": 12345,
+  "download": 987654,
+  "upload_speed": 1200,
+  "download_speed": 54000
+}
+```
+
+| Field | |
+|---|---|
+| `id` | The core's id of the connection, a string |
+| `created_at`, `closed_at` | When the connection opened and closed; `closed_at` is `0` while it is open |
+| `network`, `protocol` | Such as `tcp` and `tls` |
+| `source` | The client's address, `ip:port`, as the core reports it; `""` when unknown |
+| `source_name` | What Throne shows for the client: `Local` for Throne's own device, else the client's IP address |
+| `destination`, `domain` | Where the connection goes, `ip:port`, and its domain name |
+| `process`, `process_path` | The program that opened the connection |
+| `outbound` | The name of the profile behind `outbound_tag`, else the tag |
+| `outbound_tag` | The core's outbound that carries the connection |
+| `rule` | The routing rule that matched, as the core writes it; `""` when the final outbound routed the connection |
+| `rule_item` | The part of the rule that matched; `""` when the core could not tell |
+| `upload`, `download` | Bytes sent and received |
+| `upload_speed`, `download_speed` | Bytes per second; `0` once the connection is closed |
+
+### WARP
+
+Throne's built-in Cloudflare WARP, **Enable Warp** in its routing settings. It holds no
+keys.
+
+```json
+{
+  "enabled": false,
+  "mode": "wireguard",
+  "configured": true,
+  "endpoint": "engage.cloudflareclient.com:2408",
+  "addresses": ["172.16.0.2/32", "2606:4700:110:8a36::1/128"],
+  "terms_accepted": true,
+  "terms_url": "https://www.cloudflare.com/application/terms/",
+  "registering": false
+}
+```
+
+| Field | |
+|---|---|
+| `enabled` | WARP is on |
+| `mode` | How Throne reaches WARP: `wireguard`, `amnezia` (AmneziaWG) or `masque` |
+| `configured` | `mode` has a registered device, which turning WARP on needs |
+| `endpoint`, `addresses` | The WARP server of `mode` and the addresses of its interface |
+| `terms_accepted` | Cloudflare's WARP terms, at `terms_url`, were accepted, in Throne's window or with [`POST /v1/warp/register`](#post-v1warpregister). Registering a device needs that |
+| `registering` | A `POST /v1/warp/register` is under way |
+
 ## Status
 
 ### `GET /v1/status`
@@ -552,6 +735,63 @@ every group, group by group in tab order. An unknown `group` is `not_found`.
 ### `GET /v1/profiles/{id}`
 
 Returns one [Profile](#profile).
+
+### `GET /v1/profiles/{id}/config`
+
+Admin, since it holds the profile's credentials. Returns the profile's configuration:
+
+```json
+{
+  "id": 12,
+  "type": "vless",
+  "name": "DE Frankfurt",
+  "outbound": {"type": "vless", "tag": "DE Frankfurt", "server": "de1.example.com", "server_port": 443, "uuid": "...", "...": "..."},
+  "link": "vless://...",
+  "editable": true,
+  "reason": ""
+}
+```
+
+| Field | |
+|---|---|
+| `type`, `name` | As in the [Profile](#profile) |
+| `outbound` | The configuration as Throne stores it: a JSON object whose fields depend on `type` |
+| `link` | The profile's share link, `""` for a type without one |
+| `editable` | Whether [`PUT /v1/profiles/{id}/config`](#put-v1profilesidconfig) may change it. When not, `reason` says why: Extra Core profiles run programs, and a configuration may set something that an import removes, such as the link to an OTP entry, which only Throne's window may set |
+
+Errors: `not_found`.
+
+### `PUT /v1/profiles/{id}/config`
+
+Admin. Replaces the configuration of a profile. The body holds one of:
+
+```json
+{"outbound": {"tag": "DE Frankfurt", "server": "de1.example.com", "server_port": 443, "...": "..."}}
+{"link": "vless://..."}
+```
+
+| Field | |
+|---|---|
+| `outbound` | A configuration, as `GET` returns it |
+| `link` | A share link |
+
+The type stays: Throne reads `outbound` or `link` as a configuration of the profile's type.
+A link without a name keeps the profile's name, and a type without share links takes only
+`outbound`.
+It checks the configuration as an import does and changes nothing when something is wrong:
+the response is `invalid_profile`, whose message has a summary line and then a line per
+problem, `field: message`. A configuration that sets what only Throne's window may set is
+refused that way too, and so is a link of another type ("The link is not a vless link").
+
+Returns `{"profile": Profile, "warnings": ["field: message"], "restart_needed": true}`: the
+[Profile](#profile) after the change, the problems that did not stop it, and
+`restart_needed` as in the [Status](#status). The change waits for a restart when the
+running profile, or the chain or routing profile it runs with, uses the profile.
+
+Errors: `bad_request` (neither or both of `outbound` and `link`, or an `outbound` that is
+not an object), `not_found`, `not_editable` (only Throne's window may edit the profile; the
+message says why, as `reason` does), `editing` (the profile is open in an editor in Throne),
+`busy` (a profile is starting or stopping, or a test runs), `invalid_profile`.
 
 ### `POST /v1/import`
 
@@ -774,6 +1014,143 @@ running profile's group uses its own (`route_id`), nothing restarts. Returns the
 Errors: `not_found`, `editing` (the routing profiles are open in an editor in Throne), plus
 the errors of `PUT /v1/connection` for the restart.
 
+### `GET /v1/routes/schema`
+
+Returns the [Route schema](#route-schema): the attributes of rules, the rule types and the
+outbounds that are not profiles.
+
+### `GET /v1/routes/{id}`
+
+Returns the [Route detail](#route-detail) of a routing profile.
+
+Errors: `not_found`.
+
+### `POST /v1/routes`
+
+Admin. Adds a routing profile.
+
+```json
+{"kind": "rules", "name": "Work", "default_outbound": -1}
+```
+
+| Field | |
+|---|---|
+| `kind` | `rules` or `raw`. Default: `rules`. A `remote` routing profile is made in Throne's window |
+| `name` | Required, not empty |
+| the others | As for [`PUT /v1/routes/{id}`](#put-v1routesid) |
+
+A `rules` routing profile without `rules` starts with the rules that a new one starts with in
+Throne's window, and a `raw` one without `raw_route` with the example route the window starts
+one with. Throne checks it as `PUT` does. Returns 201 with
+`{"route": Route detail, "warnings": [...], "restart_needed": false}`, as `PUT` does.
+
+Errors: `bad_request` (a `kind` other than `rules` and `raw`, no `name`, or a malformed
+field), `editing` (the routing profiles are open in an editor in Throne), `busy` (a profile
+is starting or stopping), `invalid_route`.
+
+### `PUT /v1/routes/{id}`
+
+Admin. Changes a routing profile. Each field that the body holds replaces the routing
+profile's; the others stay as they are.
+
+```json
+{"name": "Default", "simple": {"proxy": "suffix:example.com\nsuffix:example.org\n"}}
+```
+
+| Field | |
+|---|---|
+| `name` | Not empty |
+| `default_outbound` | `-1`, `-2`, `-3` or `-5` |
+| `rules` | Every [rule](#rule), in order. A `custom` rule takes its `name`, `disabled` and every attribute; an unknown attribute is a `bad_request`. A simple rule takes its `name`, `disabled` and the attributes that Throne's window lets you edit in it, and ignores the others. An `endpoint_preferred_by` rule takes `disabled` and the attribute `outbound`, its profile |
+| `simple` | An object with any of `proxy`, `direct`, `block` and `warp_bypass`, each written as the Route detail has it: replaces those simple rules. A line that Throne cannot read is a problem of `invalid_route` |
+| `raw_route` | A JSON object, as text |
+| `prevent_modifications`, `auto_update`, `custom_dns` | `true` or `false` |
+| `remote_url` | An http or https URL |
+| `endpoints` | Ids of OpenVPN and OpenConnect profiles, or of chains that exit through one. Throne adds and removes the `endpoint_preferred_by` rules to match, and drops the ids of deleted profiles with a warning |
+| `inner_hop_endpoints` | Ids among `endpoints` |
+| `dns` | Any of the DNS settings, as the Route detail has them: each one sent replaces the routing profile's, or Throne's when the routing profile has none of its own |
+
+`rules` and `simple` belong to `rules` and `remote` routing profiles, `raw_route` and
+`prevent_modifications` to `raw` ones, and `remote_url` and `auto_update` to `remote` ones.
+Another kind answers `bad_request`, unless the field has its empty value (`[]`, `""`,
+`false`, or empty `simple` lists), so a Route detail sent back unchanged is accepted. Rules
+with no conditions are dropped, and rules without a name or with another rule's name are
+renamed, each with a warning. The read-only fields of the Route detail (`id`, `kind`, `active`, `in_use`,
+`source_group_id`, `remote_updated_at`) are ignored.
+
+Throne checks the whole routing profile first, as its window does when you save, and
+changes nothing when something is wrong: the response is `invalid_route`, whose message has
+a summary line and then a line per problem, such as `Rule 3 (Ads): network: ...`.
+
+Returns `{"route": Route detail, "warnings": ["Rule 2 (LAN): ..."], "restart_needed": true}`:
+the routing profile after the change, the problems that did not stop it, and
+`restart_needed` as in the [Status](#status). A change to the routing profile that the
+running profile connects with waits for a restart.
+
+Errors: `bad_request`, `not_found`, `editing` (the routing profile, or the list of them, is
+open in an editor in Throne), `busy` (a profile is starting or stopping), `invalid_route`.
+
+### `DELETE /v1/routes/{id}`
+
+Admin. Deletes a routing profile. The groups that connected with it (`route_id`) follow the
+active one again, and when it was the active one, another one becomes active. Throne reports
+`status` and `groups` in [`GET /v1/events`](#get-v1events).
+
+Returns `{"deleted": 4, "restart_needed": true}`: the routing profile's id, and
+`restart_needed` as in the [Status](#status). Deleting the routing profile that the running
+profile connects with waits for a restart.
+
+Errors: `not_found`, `last_route` (it is the only routing profile), `editing`, `busy`.
+
+### `GET /v1/warp`
+
+Returns [WARP](#warp).
+
+### `PUT /v1/warp`
+
+Admin. Turns WARP on or off and picks its mode, as Throne's routing settings do.
+
+```json
+{"enabled": true, "mode": "masque"}
+```
+
+Both fields are optional, but one is needed. `mode` is `wireguard`, `amnezia` or `masque`.
+Throne saves the change; when WARP is or was on and a profile runs, the change waits for a
+restart. A request that changes nothing succeeds.
+
+Returns [WARP](#warp) with `restart_needed`, as in the [Status](#status).
+
+Errors: `bad_request` (neither field, an unknown `mode`, or a field of the wrong type),
+`editing` (Throne's routing settings are open), `busy` (a profile is starting or stopping),
+`warp_not_configured` (WARP would be on in a mode without a registered device; register one
+first).
+
+### `POST /v1/warp/register`
+
+Admin. Registers a new device with Cloudflare for a mode and stores it, as **Generate Warp
+Config** in Throne's routing settings does, and makes that mode WARP's mode. `enabled` stays
+as it is. Throne waits up to 90 seconds for Cloudflare; when it takes longer, the response is
+202 with [WARP](#warp) and `registering` true, and the registration goes on: a client follows
+it with `GET /v1/warp`, which `settings` in [`GET /v1/events`](#get-v1events) reports.
+
+```json
+{"mode": "amnezia", "accept_terms": true}
+```
+
+| Field | |
+|---|---|
+| `mode` | `wireguard`, `amnezia` or `masque`. Default: the current mode |
+| `accept_terms` | `true` accepts Cloudflare's WARP terms (`terms_url`). Registering needs them accepted once, and Throne remembers it |
+
+Returns [WARP](#warp) with `restart_needed`, as in the [Status](#status): when WARP is on and
+a profile runs, the new device waits for a restart.
+
+Errors: `bad_request`, `terms_required` (the terms are not accepted and `accept_terms` is
+not `true`; the message names `terms_url`), `busy` (another registration is under way),
+`editing` (Throne's routing settings are open), `busy` also when a profile is starting or
+stopping as the registration ends, `warp_failed` (the registration failed; the message says
+why, and Throne stored nothing).
+
 ## Tests
 
 Throne runs one test at a time, whether the API or its window started it.
@@ -852,6 +1229,47 @@ from speed tests is the app `Speedtest`.
 
 Errors: `bad_request` (`by` is neither `profile` nor `app`, `from` or `to` is not an integer, or
 `from` is after `to`), `stats_disabled` when traffic statistics are turned off in Throne.
+
+### `GET /v1/connections`
+
+Admin, since connections name the sites they go to. Returns the connections of the running
+profile, as Throne's Connections view lists them.
+
+```json
+{"running": true, "updated_at": 1760000000123, "connections": [Connection, ...]}
+```
+
+| Field | |
+|---|---|
+| `running` | A profile runs |
+| `updated_at` | When Throne last read the connections from the core, in milliseconds since the epoch; `0` when it has not yet |
+| `connections` | [Connections](#connection), open ones first, then closed ones, each newest `created_at` first. At most 2000 |
+
+Throne reads the connections from the core once a second while its Connections view shows
+them, and for 10 seconds after each request. So the first request after a pause may return
+an old list, or none, and `updated_at` says how old it is; the next one is fresh. A client
+that follows the connections repeats the request every second. Throne does not report them
+in [`GET /v1/events`](#get-v1events).
+
+While no profile runs: `{"running": false, "updated_at": 0, "connections": []}`.
+
+Errors: `stats_disabled` (statistics are turned off in Throne, so it does not read the
+connections).
+
+### `DELETE /v1/connections`
+
+Admin. Closes connections of the running profile.
+
+```json
+{"ids": ["6a1f…", "93c0…"]}
+```
+
+`ids` lists the connections to close; `{"all": true}` instead closes every open connection
+of the list that Throne last read, which is empty unless a `GET /v1/connections` came in
+the 10 seconds before. Returns `{"closed": 2}`: how many the core closed.
+
+Errors: `bad_request` (neither or both of `ids` and `all`, or an empty `ids`), `not_running`,
+`core_unavailable`.
 
 ## Settings
 
@@ -1266,14 +1684,15 @@ then responds. When `timeout` passes, `changes` is empty.
 
 | Topic | Read again | Throne reports it when |
 |---|---|---|
-| `status` | `GET /v1/status`, `GET /v1/routes` | The [Status](#status) changes, such as the connection, a mode, the routing profile, the kill switch or `restart_needed`, or the list of routing profiles changes |
+| `status` | `GET /v1/status`, `GET /v1/routes`, `GET /v1/routes/{id}`, `GET /v1/warp` | The [Status](#status) changes, such as the connection, a mode, the routing profile, the kill switch or `restart_needed`, or routing profiles are added, changed or deleted, or WARP changes |
 | `groups` | `GET /v1/groups` | Groups are added, deleted, renamed, reordered or updated, by imports and subscription updates too |
 | `profiles` | `GET /v1/profiles` | Profiles are added, deleted or changed, by imports, subscription updates, tests that end and cleared results too |
 | `tests` | `GET /v1/tests` | A test that the API started starts, ends or is cancelled |
-| `settings` | `GET /v1/settings` | Settings change, in Throne's window or through the API |
+| `settings` | `GET /v1/settings`, `GET /v1/warp` | Settings change, in Throne's window or through the API, WARP's too |
 
 Topics are hints: Throne may report a topic that did not change, and a client reads it
-again all the same. Results that a running test fills in, and the traffic counters
+again all the same. [Connections](#get-v1connections) have no topic: a client reads them
+again every second. Results that a running test fills in, and the traffic counters
 (`traffic_up`, `traffic_down`), may change without a `profiles` change; Throne reports
 `profiles` when a test that the API started ends. While it holds a request, Throne compares
 the Status with the one before every second, so `status` follows every change of it.
@@ -1316,9 +1735,10 @@ Errors: `busy` (a profile is starting or stopping, as while a restore stops it),
 | `bad_request` | 400 | The request or its body is malformed |
 | `no_profiles` | 400 | The selection matched no profile |
 | `forbidden` | 403 | An admin request from another device, while Throne accepts them only from its own: **Allow management from the local network** in Throne, or `--api-admin-lan` in headless Throne, accepts them |
+| `not_editable` | 403 | Only Throne's window may edit the profile; the message says why |
 | `not_found` | 404 | Unknown path, profile, group, routing profile, job, backup or upload |
 | `method_not_allowed` | 405 | The path exists, the method does not |
-| `busy` | 409 | Another start, stop, test, update, backup or restore is in progress |
+| `busy` | 409 | Another start, stop, test, update, backup, restore or WARP registration is in progress |
 | `superseded` | 409 | A newer start replaced this one before it ran |
 | `group_archived` | 409 | The group is archived |
 | `kill_switch_inactive` | 409 | The kill switch is on but not working, so Throne refuses to start profiles; the message says why (see [Kill switch](#kill-switch)) |
@@ -1327,12 +1747,15 @@ Errors: `busy` (a profile is starting or stopping, as while a restore stops it),
 | `system_proxy_unsupported` | 409 | Headless Throne never sets the system proxy |
 | `tun_conflict` | 409 | Something else on this computer holds Tun, such as another Throne; the message says what (see [One Tun per computer](#one-tun-per-computer)) |
 | `no_working_profile` | 409 | No candidate passed the latency test |
-| `stats_disabled` | 409 | Traffic statistics are turned off |
+| `stats_disabled` | 409 | Traffic statistics, or the statistics that list connections, are turned off |
 | `editing` | 409 | What the request would change is open in an editor in Throne |
 | `last_group` | 409 | Throne keeps at least one group |
+| `last_route` | 409 | Throne keeps at least one routing profile |
 | `subscription_group` | 409 | Profiles imported into a subscription group are removed by its next update |
 | `not_subscription` | 409 | The group has no subscription |
 | `not_running` | 409 | No profile runs |
+| `warp_not_configured` | 409 | WARP's mode has no registered device |
+| `terms_required` | 409 | Registering a WARP device needs Cloudflare's WARP terms accepted |
 | `incomplete` | 409 | The upload is not complete |
 | `bad_offset` | 409 | The chunk does not start where the upload stands |
 | `needs_privileges` | 412 | Tun needs privileges that Throne does not have |
@@ -1345,8 +1768,11 @@ Errors: `busy` (a profile is starting or stopping, as while a restore stops it),
 | `nothing_imported` | 422 | No profile could be imported |
 | `checksum_mismatch` | 422 | The uploaded archive does not match its SHA-256 |
 | `invalid_archive` | 422 | The uploaded file is not an archive Throne can restore from |
+| `invalid_profile` | 422 | The profile's configuration has problems; the message lists them |
+| `invalid_route` | 422 | The routing profile has problems; the message lists them |
 | `internal` | 500 | Something failed inside Throne |
 | `fetch_failed` | 502 | A download failed |
+| `warp_failed` | 502 | Registering a WARP device failed |
 | `core_unavailable` | 503 | Throne's core process is not reachable |
 | `exiting` | 503 | Throne is shutting down |
 | `restarting` | 503 | Throne restarts after a restore, made through the API or in its window |

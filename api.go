@@ -210,6 +210,23 @@ func (a api) SetRoute(ctx context.Context, id int, opts ...Option) (*Status, err
 	return a.change(ctx, "PUT", "/v1/routes/active", map[string]any{"id": id}, collect(opts))
 }
 
+// RouteSchema describes the rules of routing profiles (GET /v1/routes/schema): the
+// attributes a rule takes on Throne's system, the rule types and the outbounds that are not
+// profiles.
+func (a api) RouteSchema(ctx context.Context) (*RouteSchema, error) {
+	return fetch[RouteSchema](ctx, a, &call{method: "GET", path: "/v1/routes/schema"})
+}
+
+// RouteDetail returns a routing profile with its rules and settings (GET /v1/routes/{id}).
+func (a api) RouteDetail(ctx context.Context, id int) (*RouteDetail, error) {
+	return fetch[RouteDetail](ctx, a, &call{method: "GET", path: "/v1/routes/" + strconv.Itoa(id)})
+}
+
+// Warp returns the state of Throne's built-in WARP (GET /v1/warp).
+func (a api) Warp(ctx context.Context) (*Warp, error) {
+	return fetch[Warp](ctx, a, &call{method: "GET", path: "/v1/warp"})
+}
+
 // change sends a request that changes the connection, with the waiting fields, and
 // returns the Status.
 func (a api) change(ctx context.Context, method, path string, body map[string]any, o options) (*Status, error) {

@@ -23,11 +23,14 @@ export function Loading({ text = 'Loading…' }) {
 export function ErrorBox({ error, onRetry, compact = false }) {
   if (!error) return null;
   const { title, detail } = describeError(error);
+  const lines = detail ? detail.split('\n').filter(l => l.trim()) : [];
   return html`<div class=${compact ? 'notice bad compact' : 'notice bad'} role="alert">
     <${Icon} name="alert" />
     <div class="notice-body">
       <strong>${title}</strong>
-      ${detail && html`<span>${detail}</span>`}
+      ${lines.length > 1
+        ? html`<ul class="problems">${lines.map((l, i) => html`<li key=${i}>${l}</li>`)}</ul>`
+        : lines.length === 1 && html`<span>${lines[0]}</span>`}
     </div>
     ${onRetry && html`<button type="button" class="btn small" onClick=${() => onRetry()}>Retry</button>`}
   </div>`;

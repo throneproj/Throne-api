@@ -635,12 +635,14 @@ func backupPartNames(_ *completer, word string) completion {
 
 // apiPaths are the paths of spec/api.md without an ID in them, by method, for call.
 var apiPaths = map[string][]string{
-	"GET": {"/v1/status", "/v1/groups", "/v1/profiles", "/v1/routes", "/v1/tests", "/v1/stats/live",
-		"/v1/stats/traffic", "/v1/settings", "/v1/geo-assets", "/v1/logs", "/v1/events"},
-	"POST": {"/v1/import", "/v1/groups", "/v1/groups/update", "/v1/tests", "/v1/rule-sets/update",
-		"/v1/geo-assets/update", "/v1/backups", "/v1/restores", "/v1/restart", "/v1/shutdown"},
-	"PUT":    {"/v1/connection", "/v1/modes", "/v1/routes/active", "/v1/settings"},
-	"DELETE": {"/v1/profiles", "/v1/connection", "/v1/results"},
+	"GET": {"/v1/status", "/v1/groups", "/v1/profiles", "/v1/routes", "/v1/routes/schema", "/v1/warp",
+		"/v1/tests", "/v1/stats/live", "/v1/stats/traffic", "/v1/connections", "/v1/settings",
+		"/v1/geo-assets", "/v1/logs", "/v1/events"},
+	"POST": {"/v1/import", "/v1/groups", "/v1/groups/update", "/v1/routes", "/v1/warp/register",
+		"/v1/tests", "/v1/rule-sets/update", "/v1/geo-assets/update", "/v1/backups", "/v1/restores",
+		"/v1/restart", "/v1/shutdown"},
+	"PUT":    {"/v1/connection", "/v1/modes", "/v1/routes/active", "/v1/warp", "/v1/settings"},
+	"DELETE": {"/v1/profiles", "/v1/connection", "/v1/results", "/v1/connections"},
 }
 
 // callMethods completes the methods of call, in lower case once the word is, which call

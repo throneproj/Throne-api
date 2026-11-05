@@ -386,10 +386,13 @@ func main() {
 
 Every request in [api.md](spec/api.md) has a method: `Status`, `Groups`, `Profiles`,
 `Profile`, `Connect`, `ConnectLast`, `ConnectLowestLatency`, `Disconnect`, `SetModes`,
-`Routes`, `SetRoute`, `StartTest`, `RunTest`, `Jobs`, `Job`, `CancelJob`, `ClearResults`,
-`LiveStats`, `Traffic` and `Events`. The management requests have `Logs`, `Import`,
-`AddGroup`, `UpdateGroup`, `UpdateGroups`, `DeleteGroup`, `DeleteProfiles`, `Settings`,
-`SetSettings`, `UpdateRuleSets`, `GeoAssets`, `UpdateGeoAssets`, `Restart` and `Shutdown`;
+`Routes`, `SetRoute`, `RouteSchema`, `RouteDetail`, `Warp`, `StartTest`, `RunTest`, `Jobs`,
+`Job`, `CancelJob`, `ClearResults`, `LiveStats`, `Traffic` and `Events`. The management
+requests have `Logs`, `Connections`, `CloseConnections`, `CloseAllConnections`, `Import`,
+`AddGroup`, `UpdateGroup`, `UpdateGroups`, `DeleteGroup`, `DeleteProfiles`, `ProfileConfig`,
+`SetProfileConfig`, `AddRoute`, `UpdateRoute`, `DeleteRoute`, `SetWarp`, `RegisterWarp`,
+`Settings`, `SetSettings`, `UpdateRuleSets`, `GeoAssets`, `UpdateGeoAssets`, `Restart` and
+`Shutdown`;
 `Backup` writes a backup archive to an `io.Writer`, and `UploadRestore`, `RestoreStatus`,
 `ApplyRestore` and `CancelRestore` restore one. `Call` sends anything else, and `Send` does
 too and returns the status and body as Throne sent them. A `Client` opens one connection per
@@ -399,9 +402,10 @@ call; `Client.Dial` opens a `Session` that carries several calls over one connec
   gets a `timeout` that ends a little before it; when that passes, the call returns what
   Throne has so far without an error: for a connection change the current `Status`, in state
   `connecting` for example. `throne.NoWait()` returns at once.
-- Admin requests, which read the log, import, delete, change settings, back up, restore,
-  restart and shut down, are answered only from Throne's own device unless Throne allows
-  management from the local network; elsewhere they fail with `throne.CodeForbidden`.
+- Admin requests, which read the log, the connections and profile configurations, import,
+  edit, delete, change settings and WARP, back up, restore, restart and shut down, are
+  answered only from Throne's own device unless Throne allows management from the local
+  network; elsewhere they fail with `throne.CodeForbidden`.
 - `Events` and `Logs` follow Throne: call them again with the `Instance` and `Cursor` of the
   last result and a `Wait`, and Throne holds the call until something changes or a line
   follows.
@@ -439,8 +443,9 @@ case err != nil:
 - The key grants every request in [api.md](spec/api.md): whoever holds it controls Throne's
   connection, modes and routing, and can read your profiles' names, addresses, test results
   and traffic. On Throne's own device, or from the LAN when Throne allows management from
-  there, it also imports, deletes, changes settings and makes backups, which hold your
-  profiles' credentials in plain text.
+  there, it also imports, edits, deletes, changes settings, reads your connections and
+  profile configurations and makes backups; configurations and backups hold your profiles'
+  credentials in plain text.
 - Keep the key out of command lines and shell history: use a key file that only you can read,
   or `THRONE_KEY` from a secret store. thronectl never accepts the key as an argument.
 - Traffic is encrypted and authenticated, on a LAN too, but there is no forward secrecy:

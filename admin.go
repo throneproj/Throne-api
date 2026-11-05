@@ -26,6 +26,8 @@ const (
 	backupWait       = 120 * time.Second
 	uploadWait       = 120 * time.Second
 	applyWait        = 60 * time.Second
+	// warpWait is how long Throne may take to register a WARP device.
+	warpWait = 90 * time.Second
 	// discardWait bounds the delete of a backup or an upload after a failure.
 	discardWait = 10 * time.Second
 	// maxUploadChunk is the most archive bytes UploadRestore sends in one request; in
@@ -153,6 +155,142 @@ func (a api) DeleteProfiles(ctx context.Context, sel Selection, opts ...Option) 
 	return fetch[Deletion](ctx, a, waiting(ctx, "DELETE", "/v1/profiles", sel.fields(map[string]any{}), collect(opts), deleteWait))
 }
 
+// ProfileConfig returns the configuration of a profile (GET /v1/profiles/{id}/config). It
+// is an admin request, since the configuration holds the profile's credentials.
+func (a api) ProfileConfig(ctx context.Context, id int) (*ProfileConfig, error) {
+	return fetch[ProfileConfig](ctx, a, &call{method: "GET", path: "/v1/profiles/" + strconv.Itoa(id) + "/config"})
+}
+
+// ConfigSource is the new configuration of SetProfileConfig: Outbound or Link, not both.
+type ConfigSource struct {
+	// Outbound is a JSON object as ProfileConfig returns it.
+	Outbound json.RawMessage
+	// Link is a share link of the profile's type.
+	Link string
+}
+
+// SetProfileConfig replaces the configuration of a profile (PUT /v1/profiles/{id}/config)
+// and returns the profile afterwards. It is an admin request.
+//
+// The type of the profile stays: Throne reads src as a configuration of that type, checks
+// it as an import would, and changes nothing when something is wrong; that fails with
+// CodeInvalidProfile, whose message has a line per problem. A profile that only Throne's
+// window may edit (ProfileConfig.Editable) fails with CodeNotEditable.
+func (a api) SetProfileConfig(ctx context.Context, id int, src ConfigSource) (*ProfileChange, error) {
+	body := map[string]any{}
+	switch {
+	case len(src.Outbound) > 0 && src.Link != "":
+		return nil, errors.New("throne: SetProfileConfig takes Outbound or Link, not both")
+	case len(src.Outbound) > 0:
+		body["outbound"] = src.Outbound
+	case src.Link != "":
+		body["link"] = src.Link
+	default:
+		return nil, errors.New("throne: SetProfileConfig needs Outbound or Link")
+	}
+	path := "/v1/profiles/" + strconv.Itoa(id) + "/config"
+	return fetch[ProfileChange](ctx, a, &call{method: "PUT", path: path, body: body})
+}
+
+// RouteEdit changes a routing profile in AddRoute and UpdateRoute. A nil field stays as it
+// is.
+type RouteEdit struct {
+	// Name must not be empty.
+	Name *string
+	// DefaultOutbound is OutboundProxy, OutboundDirect, OutboundBlock or OutboundWarpBypass.
+	DefaultOutbound *int
+	// Rules replace every rule, in order; a RouteKindRaw profile takes none. A RuleCustom
+	// rule takes the attributes of RouteSchema plus "wifi_ssid", "wifi_bssid" and
+	// "sniffers". A simple rule takes its name, Disabled and the attributes Throne's window
+	// lets you edit in it, and a RuleEndpoint rule Disabled and the "outbound" attribute,
+	// its profile.
+	Rules []RouteRule
+	// Simple replaces the simple rules that it sets; a RouteKindRaw profile takes none.
+	Simple               *SimpleRulesEdit
+	RawRoute             *string
+	PreventModifications *bool
+	// RemoteURL is an http or https URL.
+	RemoteURL  *string
+	AutoUpdate *bool
+	// Endpoints and InnerHopEndpoints replace the lists. InnerHopEndpoints are some of
+	// Endpoints.
+	Endpoints         []int
+	InnerHopEndpoints []int
+	CustomDNS         *bool
+	DNS               *RouteDNS
+}
+
+// SimpleRulesEdit changes the simple rules of a routing profile, each written as
+// SimpleRules has it. A nil field stays as it is.
+type SimpleRulesEdit struct {
+	Proxy      *string `json:"proxy,omitempty"`
+	Direct     *string `json:"direct,omitempty"`
+	Block      *string `json:"block,omitempty"`
+	WarpBypass *string `json:"warp_bypass,omitempty"`
+}
+
+// fields adds the fields of e that are set to a request body.
+func (e RouteEdit) fields(body map[string]any) map[string]any {
+	set(body, "name", e.Name)
+	set(body, "default_outbound", e.DefaultOutbound)
+	if e.Rules != nil {
+		body["rules"] = e.Rules
+	}
+	if e.Simple != nil {
+		body["simple"] = e.Simple
+	}
+	set(body, "raw_route", e.RawRoute)
+	set(body, "prevent_modifications", e.PreventModifications)
+	set(body, "remote_url", e.RemoteURL)
+	set(body, "auto_update", e.AutoUpdate)
+	if e.Endpoints != nil {
+		body["endpoints"] = e.Endpoints
+	}
+	if e.InnerHopEndpoints != nil {
+		body["inner_hop_endpoints"] = e.InnerHopEndpoints
+	}
+	set(body, "custom_dns", e.CustomDNS)
+	if e.DNS != nil {
+		body["dns"] = e.DNS
+	}
+	return body
+}
+
+func set[T any](body map[string]any, name string, v *T) {
+	if v != nil {
+		body[name] = *v
+	}
+}
+
+// AddRoute adds a routing profile of kind RouteKindRules or RouteKindRaw (POST /v1/routes)
+// and returns it. It is an admin request. e.Name is required, and the other fields of e
+// apply as in UpdateRoute. A RouteKindRules profile without Rules starts with the rules a
+// new one starts with in Throne's window.
+func (a api) AddRoute(ctx context.Context, kind string, e RouteEdit) (*RouteChange, error) {
+	return fetch[RouteChange](ctx, a, &call{method: "POST", path: "/v1/routes", body: e.fields(map[string]any{"kind": kind})})
+}
+
+// UpdateRoute changes a routing profile (PUT /v1/routes/{id}) and returns it. It is an
+// admin request. The fields of e that are set replace those of the routing profile.
+// Throne checks everything first and changes nothing when something is wrong; that fails
+// with CodeInvalidRoute, whose message has a line per problem.
+func (a api) UpdateRoute(ctx context.Context, id int, e RouteEdit) (*RouteChange, error) {
+	return fetch[RouteChange](ctx, a, &call{method: "PUT", path: "/v1/routes/" + strconv.Itoa(id), body: e.fields(map[string]any{})})
+}
+
+// DeleteRoute deletes a routing profile (DELETE /v1/routes/{id}) and reports whether
+// changes wait for the running profile to restart. It is an admin request. Throne keeps
+// at least one routing profile: deleting the last fails with CodeLastRoute.
+func (a api) DeleteRoute(ctx context.Context, id int) (bool, error) {
+	r, err := fetch[struct {
+		RestartNeeded bool `json:"restart_needed"`
+	}](ctx, a, &call{method: "DELETE", path: "/v1/routes/" + strconv.Itoa(id)})
+	if err != nil {
+		return false, err
+	}
+	return r.RestartNeeded, nil
+}
+
 // Settings returns Throne's settings that the API manages (GET /v1/settings), by the
 // names spec/api.md lists. Values decode as encoding/json does: bool, float64 or string.
 // Settings this platform lacks are absent.
@@ -177,6 +315,44 @@ func (a api) SetSettings(ctx context.Context, values map[string]any) (*SettingsC
 	return fetch[SettingsChange](ctx, a, &call{method: "PUT", path: "/v1/settings", body: map[string]any{"settings": values}})
 }
 
+// WarpSettings are what SetWarp changes. A nil or "" field stays as it is.
+type WarpSettings struct {
+	Enabled *bool
+	// Mode is WarpWireGuard, WarpAmnezia or WarpMASQUE.
+	Mode string
+}
+
+// SetWarp turns WARP on or off and picks its mode (PUT /v1/warp), and returns WARP
+// afterwards. It is an admin request. Turning WARP on in a mode without a registered
+// device fails with CodeWarpNotConfigured; RegisterWarp registers one.
+func (a api) SetWarp(ctx context.Context, w WarpSettings) (*WarpChange, error) {
+	body := map[string]any{}
+	set(body, "enabled", w.Enabled)
+	if w.Mode != "" {
+		body["mode"] = w.Mode
+	}
+	return fetch[WarpChange](ctx, a, &call{method: "PUT", path: "/v1/warp", body: body})
+}
+
+// RegisterWarp registers a new WARP device with Cloudflare for mode, "" for the current
+// one (POST /v1/warp/register), and returns WARP afterwards, with mode as its mode;
+// Enabled stays as it is. It is an admin request.
+//
+// Registering needs Cloudflare's WARP terms (Warp.TermsURL) accepted once: acceptTerms
+// accepts them, and until they are, RegisterWarp fails with CodeTermsRequired. Throne
+// responds within 90 seconds. A failed registration stores nothing and fails with
+// CodeWarpFailed.
+func (a api) RegisterWarp(ctx context.Context, mode string, acceptTerms bool) (*WarpChange, error) {
+	body := map[string]any{}
+	if mode != "" {
+		body["mode"] = mode
+	}
+	if acceptTerms {
+		body["accept_terms"] = true
+	}
+	return fetch[WarpChange](ctx, a, &call{method: "POST", path: "/v1/warp/register", body: body, wait: warpWait})
+}
+
 // Logs returns lines of Throne's log, the log that Throne's window shows (GET
 // /v1/logs). It is an admin request, since the log names the sites that connections
 // went to. With q.Instance and q.Wait, Throne holds the request while no line follows
@@ -197,6 +373,42 @@ func (a api) Logs(ctx context.Context, q LogQuery) (*Logs, error) {
 		}
 	}
 	return fetch[Logs](ctx, a, r)
+}
+
+// Connections returns the connections of the running profile (GET /v1/connections). It is
+// an admin request, since connections name the sites they go to.
+//
+// Each call makes Throne keep its list fresh, once a second, for the next 10 seconds. So
+// the first call after a pause can return an old or empty list, as UpdatedAt tells, and a
+// call a second later gets a fresh one.
+func (a api) Connections(ctx context.Context) (*Connections, error) {
+	return fetch[Connections](ctx, a, &call{method: "GET", path: "/v1/connections"})
+}
+
+// CloseConnections closes the connections with these IDs (DELETE /v1/connections) and
+// returns how many the core closed. Without IDs it closes none and sends nothing. It is an
+// admin request. It fails with CodeNotRunning when no profile runs.
+func (a api) CloseConnections(ctx context.Context, ids ...string) (int, error) {
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	return a.closeConnections(ctx, map[string]any{"ids": ids})
+}
+
+// CloseAllConnections closes every open connection of Throne's latest list
+// (DELETE /v1/connections), as CloseConnections does.
+func (a api) CloseAllConnections(ctx context.Context) (int, error) {
+	return a.closeConnections(ctx, map[string]any{"all": true})
+}
+
+func (a api) closeConnections(ctx context.Context, body map[string]any) (int, error) {
+	r, err := fetch[struct {
+		Closed int `json:"closed"`
+	}](ctx, a, &call{method: "DELETE", path: "/v1/connections", body: body})
+	if err != nil {
+		return 0, err
+	}
+	return r.Closed, nil
 }
 
 // UpdateRuleSets makes the core download the remote rule-sets of the running profile
